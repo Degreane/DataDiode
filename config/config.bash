@@ -18,6 +18,14 @@ TR=$(which tr)
 AWK=$(which awk)
 ## DIODE_COMPRESS_TOOL
 DIODE_COMPRESS_TOOL=$(which patool)
+## DIODE_DOCUMENT_TOOL
+DIODE_DOCUMENT_TOOL=$(which mraptor)
+## CWD (Current Working Directory)
+CWD=$(pwd)
+## CLAMAV
+CLAMAV=$(which clamscan)
+## FIND
+FIND=$(which find)
 
 
 ## COMPRESSION_RECURSIVE <<<
@@ -30,14 +38,16 @@ COMPRESSION_RECURSIVE=2
 ## DIODE_WORKING_DIRECTORY <<<
 ## Directory Specified to work with the files to be examined
 ## >>>
-DIODE_WORKING_DIRECTORY="/home/fbanna/projects/MOD/DataDiode/files"
+DIODE_WORKING_DIRECTORY="${CWD}/files"
 
 ## DIODE_FILE_TYPES <<<
 ## Allowed File Types Based On Extension
 ## a file will be allowed only if its extension is allowed in this variable.
 ## the file will not be allowed if its extension is not defined as well
 ## >>>
-DIODE_FILE_TYPES=("zip" "tgz" "gz" "xz" "rar" "gzip" "doc" "docx" "xls" "xlsx" "txt" "rtf" "pdf" "jpg" "png" "bmp")
+# unset DIODE_FILE_TYPES
+# declare -a DIODE_FILE_TYPES
+DIODE_FILE_TYPES=( "zip" "tgz" "xz" "gz" "rar" "gzip" "doc" "docx" "xls" "xlsx" "txt" "rtf" "pdf" "jpg" "png" "bmp" "bash")
 
 ## DIODE_VERBOSE <<<
 ## Verbosity Level
@@ -54,4 +64,7 @@ DIODE_VERBOSE=0
 ## - extension as index
 ## - function to call
 ## >>>
+unset DIODE_FILE_STEPS
+declare -A DIODE_FILE_STEPS
 DIODE_FILE_STEPS=( [zip]="Compressed" [tgz]="Compressed" [gz]="Compressed" [gzip]="Compressed")
+DIODE_FILE_STEPS+=([doc]="Document" [docx]="Document")
