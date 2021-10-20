@@ -4,13 +4,16 @@
 # E-Mail: degreane@gmail.com                                     #
 # -------------------------------------------------------------- #
 
+## Declare Args as an associative array
+declare -A ARGS
 
 ## getFileExtension <<<
 ## input : filename.ext
 ## return : Extension
 ## >>>
+
 getFileExtension(){
-    fName=$(${BASENAME} $1)
+    fName=$(${BASENAME} "${1}")
     fExt=$(echo ${fName//[0-9a-z_\ ]*\./} | ${TR} '[:upper:]' '[:lower:]')
 
     #`echo ${fName//[0-9a-z_\ ]*\./} | ${TR} '[:upper:]' '[:lower:]'`
@@ -43,4 +46,59 @@ Compressed() {
     cwd=$(pwd)
     cd ${tmpDir}
     ls
+}
+
+getArgs() {
+    while [[ ${#} -gt 0 ]] ; do
+        arguement=${1}
+        shift
+        case ${arguement} in
+            -[a-zA-Z]* )
+                if [[ ${#} -gt 0 ]]; then
+                    value=${1}
+                    ARGS[${arguement}]=${value}
+                    shift
+                fi
+        esac
+    done
+#    parseArgs
+}
+parseArgs() {
+    for ArgKey in "${!ARGS[@]}" ; do
+        echo "(${ArgKey} ,${ARGS[${ArgKey}]})"
+    done
+}
+isIn() {
+    ## is in is a function that takes an array or an associative array
+    ## here we pass the array/hash name and so ..
+    if [[ ${#} -eq 2 ]]; then
+        local -n AAName=${1}
+        local varName=${1}
+        local AAType=false
+        if [[ "${AAName[@]@A}" =~ '-a' ]]; then
+            AAType="Array"
+            if [[ ${AAName[*]} =~ " ${2} " ]]; then
+                echo true
+                return 1
+            else
+                echo false
+                return 0
+            fi
+        elif [[ "${AAName[@]@A}" =~ '-A' ]]; then
+            AAType="Hash"
+            if [[ -z ${AAName[${2}]} ]]; then
+                echo false
+                return 0
+            else
+                echo true
+                return 1
+            fi
+
+        else
+            echo "isIn: Input is neither array nor hash"
+            return 0
+        fi
+    else
+        echo "isIn: Input passed must be two variables"
+    fi
 }

@@ -11,19 +11,17 @@
 ## ------------------------------------------------------------ ##
 
 ## BASENAME
-BASENAME=`which basename`
+BASENAME=$(which basename)
 ## TR
-TR=`which tr`
+TR=$(which tr)
 ## AWK
-AWK=`which awk`
+AWK=$(which awk)
 ## DIODE_COMPRESS_TOOL
-DIODE_COMPRESS_TOOL=`which patool`
-
-
+DIODE_COMPRESS_TOOL=$(which patool)
 
 
 ## COMPRESSION_RECURSIVE <<<
-## Number of files to be compressed in a single archive 
+## Number of files to be compressed in a single archive
 ## applies to zip,tgz,xz,rar
 ## defaults to 2
 ## >>>
@@ -42,7 +40,7 @@ DIODE_WORKING_DIRECTORY="/home/fbanna/projects/MOD/DataDiode/files"
 DIODE_FILE_TYPES=("zip" "tgz" "gz" "xz" "rar" "gzip" "doc" "docx" "xls" "xlsx" "txt" "rtf" "pdf" "jpg" "png" "bmp")
 
 ## DIODE_VERBOSE <<<
-## Verbosity Level 
+## Verbosity Level
 ## - 0 => None (Default)
 ## - 1 => informative
 ## - 2 => Warnings
@@ -52,8 +50,8 @@ DIODE_FILE_TYPES=("zip" "tgz" "gz" "xz" "rar" "gzip" "doc" "docx" "xls" "xlsx" "
 DIODE_VERBOSE=0
 
 ## DIODE_FILE_STEPS <<<
-## hash array contains 
+## hash array contains
 ## - extension as index
-## - function to call  
+## - function to call
 ## >>>
 DIODE_FILE_STEPS=( [zip]="Compressed" [tgz]="Compressed" [gz]="Compressed" [gzip]="Compressed")
