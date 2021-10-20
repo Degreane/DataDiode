@@ -7,10 +7,13 @@
     - tr
     - basename
     - dirname
-    
 - MiniConda
     - patool
     - pyunpack
+    - oletools
+    - colorclass
+    - olefile
+    - pyparsing
 - xz
 - p7zip
 - rar

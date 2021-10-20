@@ -1,6 +1,10 @@
 #!/bin/bash
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate DataDiode
 fName="test/test1.bash.gz"
-source /home/fbanna/projects/MOD/DataDiode/config/config.bash
-source /home/fbanna/projects/MOD/DataDiode/config/functions.bash
+cwd=$(pwd)
+echo "${cwd}"
+source ${cwd}/config/config.bash
+source ${cwd}/config/functions.bash
 t=$(getFileExtension "${fName}")
-${DIODE_FILE_STEPS[$t]} "${fName}" "${t}"
+${DIODE_FILE_STEPS[$t]} "${fName}" "1"
