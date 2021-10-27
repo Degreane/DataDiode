@@ -35,49 +35,61 @@ getFileExtension(){
 
 Document() {
     ## i shall use mraptor to check the file if it contains macros 
-    fName=${1}
-    ${DIODE_DOCUMENT_TOOL} ${fName}
-    if [[ $? -eq 0 ]]; then 
-        return 0
-    else
-        return 1
-    fi
+    fName="${ARGS[-F]}"
+    ${DIODE_DOCUMENT_TOOL} "${fName}" 1>/dev/null
+    ret=$?
+    return ${ret}
 }
 Compressed() {
     ## get file name to be processed
-    fName=${1}
+    fName="${ARGS[-F]}"
     local level
-    if [[ ${#} -eq 2 ]] ; then
-        level=${2}
-    else
-        level=${COMPRESSION_RECURSIVE}
-    fi
-    level=$( expr ${2} + 0 )
+    callF isIn ARGS "-L" && {
+        level=${ARGS["-L"]}
+    }|| {
+        level=0
+    }
+    # level=$( expr ${2} + 0 )
     if [[ $level -gt $COMPRESSION_RECURSIVE ]]; then
-        # echo false
+        echo "Exiting Because Level is ${level}"
         return 1
     fi
+    echo "Level Passed In is ${level}"
     tmpDir=$(mktemp -d)
     $DIODE_COMPRESS_TOOL extract --outdir "${tmpDir}" "${fName}"
-    for _file in $(${FIND} ${tmpDir} -type f -print) ; do
-        #find /tmp -type f -regextype posix-extended -regex  '.*\.gz|.*\.zip' -print
-        echo " Executing Same FIle Again On ${_file}"
-        bash ${0} -F ${_file}
-    done
+    # for _file in $(${FIND} ${tmpDir} -type f -exec echo "'{}'" \;) ; do
+    #     #find /tmp -type f -regextype posix-extended -regex  '.*\.gz|.*\.zip' -print
+    #     echo " Executing Same FIle Again On ${_file}"
+    #     bash ${0} -F "${_file}" -L $( expr ${level} + 1) || {
+    #         return 1
+    #     }
+    # done
+    while read -r _file ; do
+        bash ${0} -F "${_file}" -L $( expr ${level} + 1 )
+    done <<< $(${FIND} ${tmpDir} -type f -print )
+    # ${FIND} ${tmpDir} -type f -exec bash test/test2.bash -F "'{}'" -L $( expr ${level} + 1 ) \; || {
+    #     exit 1
+    # }
 }
 
 getArgs() {
     while [[ ${#} -gt 0 ]] ; do
-        arguement=${1}
+        arguement="${1}"
+        # echo "Checking"
+        # printf "%s\n" "${@}"
+        # echo "arguement => ${arguement}"
         shift
-        case ${arguement} in
+        case "${arguement}" in
             -[a-zA-Z]* )
                 if [[ ${#} -gt 0 ]]; then
-                    value=${1}
-                    ARGS[${arguement}]=${value}
+                    value="${1}"
+                    # echo "value => ${value}"
+                    ARGS["${arguement}"]="${value}"
                     shift
                 fi
         esac
+        # echo
+        # echo "#########################"
     done
 #    parseArgs
 }
@@ -94,33 +106,33 @@ isIn() {
         local -n AAName=${1}
         local varName=${1}
         local AAType=false
-        echo  "IS IN %s\n" ${!AAName[@]}
+        # echo  "IS IN %s\n" ${!AAName[@]}
         if [[ "${AAName[@]@A}" =~ '-a' ]]; then
             AAType="Array"
             if [[ ${AAName[*]} =~ "${2}" ]]; then
-                echo true
+                # echo true
                 return 0
             else
-                echo false
+                # echo false
                 return 1
             fi
         elif [[ "${AAName[@]@A}" =~ '-A' ]]; then
             AAType="Hash"
             # echo "Hash"
             if [[ -z ${AAName[${2}]} ]]; then
-                echo false
+                # echo false
                 return 1
             else
-                echo true
+                # echo true
                 return 0
             fi
 
         else
-            echo "isIn: Input ${varName} is neither array nor hash"
+            # echo "isIn: Input ${varName} is neither array nor hash"
             return 1
         fi
     else
-        echo "isIn: Input passed must be two variables"
+        # echo "isIn: Input passed must be two variables"
         return 1
     fi
 }
@@ -128,21 +140,23 @@ fileExists() {
     ## checks if the file submitted exists in the system
     ## returns true,1 on success
     ## false,0 on failure
-    if [[ -e ${1} ]]; then
-        echo true
+    # echo "Checking File Exists ${ARGS[-F]}"
+    if [[ -e "${ARGS[-F]}" ]]; then
+        # echo "File ${1} Exists "
         return 0
     else
-        echo false
+        # echo "File ${1} Does Not Exist "
         return 1
     fi
 }
 virusScan() {
     if [[ ${#} -eq 1 ]]; then
-        scanResult=$(${CLAMAV} -i ${1})
-        echo "${scanResult}"
+        "${CLAMAV}" -i "${ARGS[-F]// /\ }"
+        scanResult=$?
+        # echo "Scan Result ${scanResult}"
         [[ ${scanResult} =~ 'Infected files: 0' ]] && { echo true; return 0; } || { echo "false"; return 1; }
     else
-        echo "virusScan: File '${1}' Not Found"
+        # echo "virusScan: File '${ARGS[-F]}' Not Found"
         return 1
     fi
 }
@@ -150,7 +164,7 @@ chkErr() {
     if [[ ${1} -eq 0 ]] ; then
         return 0
     else
-        printf "%s: (Return Code %s)\n" ${2} ${1}
+        # printf "%s: (Return Code %s)\n" ${2} ${1}
         return 1
     fi
 }
@@ -169,7 +183,7 @@ callF() {
         chkErr ${_res} ${funcName}
         return $?
     } || {
-        echo "No Function Call "
+        # echo "No Function Call "
         return 1
     }
 
