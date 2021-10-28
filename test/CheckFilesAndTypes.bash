@@ -14,14 +14,14 @@ getArgs "${@}"
     callF fileExists "${ARGS[-F]}" && {
         callF getFileExtension "${ARGS["-F"]}" && {
             fName=$(${BASENAME} "${ARGS["-F"]}")
-            fExt=$(echo ${fName//[0-9a-z_\ ]*\./} | ${TR} '[:upper:]' '[:lower:]')
-            # echo "Calling DIODE_FILE_TYPES with ${fExt}"
+            fExt=$(echo ${fName//*\./} | ${TR} '[:upper:]' '[:lower:]')
+            # echo "Calling DIODE_FILE_TYPES with  ${ARGS[-F]} ${fExt}"
             callF isIn DIODE_FILE_TYPES "${fExt}" && {
-                # echo "Calling DIODE_FILE_STEPS with ${fExt}"
+                echo "Calling DIODE_FILE_STEPS with ============================= ${fExt}"
                 callF isIn DIODE_FILE_STEPS "${fExt}" && {
-                    callF ${DIODE_FILE_STEPS[${fExt}]} "${ARGS["-F"]}"
-                } || {
-                    exit 1
+                    callF ${DIODE_FILE_STEPS[${fExt}]} "${ARGS["-F"]}" || {
+                        exit 1
+                    }
                 }
             }|| {
                 exit 1
@@ -29,7 +29,7 @@ getArgs "${@}"
         }
     } || exit 1
  }
-
+exit 0
 
 
 

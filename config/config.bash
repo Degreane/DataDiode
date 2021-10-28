@@ -47,7 +47,7 @@ DIODE_WORKING_DIRECTORY="${CWD}/files"
 ## >>>
 # unset DIODE_FILE_TYPES
 # declare -a DIODE_FILE_TYPES
-DIODE_FILE_TYPES=( "zip" "tgz" "xz" "gz" "rar" "gzip" "doc" "docx" "xls" "xlsx" "txt" "rtf" "pdf" "jpg" "png" "bmp" "bash")
+DIODE_FILE_TYPES=( "zip" "tgz" "xz" "gz" "rar" "gzip" "doc" "docx" "xls" "xlsx" "txt" "rtf" "pdf" "jpg" "png" "bmp" )
 
 ## DIODE_VERBOSE <<<
 ## Verbosity Level
@@ -67,4 +67,6 @@ DIODE_VERBOSE=0
 unset DIODE_FILE_STEPS
 declare -A DIODE_FILE_STEPS
 DIODE_FILE_STEPS=( [zip]="Compressed" [tgz]="Compressed" [gz]="Compressed" [gzip]="Compressed")
-DIODE_FILE_STEPS+=([doc]="Document" [docx]="Document")
+DIODE_FILE_STEPS+=([doc]="Document" [docx]="Document" [xls]="Document" [xlsx]="Document")
+DIODE_FILE_STEPS+=([pdf]="Pdf")
+DIODE_FILE_STEPS+=([jpg]="Image" [jpeg]="Image" [png]="Image" [bmp]="Image")

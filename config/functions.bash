@@ -14,7 +14,7 @@ declare -A ARGS
 
 getFileExtension(){
     fName=$(${BASENAME} "${1}")
-    fExt=$(echo ${fName//[0-9a-z_\ ]*\./} | ${TR} '[:upper:]' '[:lower:]')
+    fExt=$(echo ${fName//*\./} | ${TR} '[:upper:]' '[:lower:]')
 
     #`echo ${fName//[0-9a-z_\ ]*\./} | ${TR} '[:upper:]' '[:lower:]'`
     if [[ -z ${fExt} ]] ; then
@@ -34,11 +34,25 @@ getFileExtension(){
 }
 
 Document() {
-    ## i shall use mraptor to check the file if it contains macros 
+    ## i shall use mraptor to check the file if it contains macros
     fName="${ARGS[-F]}"
     ${DIODE_DOCUMENT_TOOL} "${fName}" 1>/dev/null
     ret=$?
     return ${ret}
+}
+Pdf() {
+    # just return 0 for now
+    if [ $(head -c 4 "${ARGS[-F]}") = "%PDF" ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+Image() {
+    # Using imagemagic identify script to identify if its a passable image or not
+    identify "${ARGS[-F]}"
+    returnValue=$?
+    return ${returnValue}
 }
 Compressed() {
     ## get file name to be processed
