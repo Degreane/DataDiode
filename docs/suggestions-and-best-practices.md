@@ -46,6 +46,16 @@ A living log of recommendations made during DataDiode development. Newest date a
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
 
+### LXC live-demo lessons (from S02-3)
+- **No Fedora image on linuxcontainers.org** as of 2026-06. Use `rockylinux 9` (RPM-family, has systemd, similar feel) or `alpine 3.22` (smaller). Defaults moved to rockylinux/9.
+- **lxc-create download template doesn't accept `--no-validate`.** Drop it; the template validates by default.
+- **Distro init may leave eth0 DOWN** even when `lxc.net.0.flags = up` is set in the container config — NetworkManager/systemd-networkd inside the container doesn't know about the host-assigned IP. After `lxc-start`, explicitly `lxc-attach -- ip addr add ... && ip link set eth0 up`. Idempotent (EEXIST on second run is fine).
+- **Enforce diode rules on the HOST, not inside the container.** Minimal Rocky/Alpine LXC images don't ship `nft`/`iptables`, and the isolated bridge has no internet for `dnf install`. The host already has `nft` and is also out of reach of a compromised container — stronger guarantee anyway.
+- **Use the `bridge` family, not `inet`, for L2 bridge filtering.** The `inet` forward hook normally doesn't see bridge-forwarded packets. The `bridge` family hooks at L2 directly and sees every packet the bridge would forward. L4 matching in bridge family requires `ether type ip` before `udp dport`.
+- **Watch for `br_netfilter` cross-contamination.** If Docker (or any user) loaded `br_netfilter`, ALL bridge-forwarded packets visit the `ip filter FORWARD` chain. Docker's chain has `policy drop`, silently breaking unrelated bridge traffic. Per-bridge opt-out: `echo 0 > /sys/class/net/<bridge>/bridge/nf_call_iptables`.
+- **Find the host-side veth name via `ip link show eth0` inside the netns**, not `/sys/class/net/eth0/iflink`. `/sys` is host-mounted in plain LXC; netlink (via `ip`) is namespace-aware. The peer ifindex shows up as the digits after `@if` in the link name.
+- **Always include a stats line printed AFTER the verify step in demo scripts**, so when it fails the operator can still see frames_in/dup/delivered counters. Current script's `exit 1` on MISMATCH bypasses the stats print; refactor in a later sprint to always print before exit.
+
 ### File transfer (from S02-1)
 - **Application-layer envelope, not transport-layer change.** File semantics (name, mode, hash) live in a `DDF` envelope *inside* the existing diode payload. The transport stays oblivious. This is also the model for future protocols (syslog, OPC, MQTT) — each gets its own envelope.
 - **Reject path traversal at the parser, not at the writer.** `fileenv.Decode` rejects names containing `/`, `\`, NUL, `.`, `..` *before* returning to the caller. The writer also re-baselines with `filepath.Base` (defense in depth) — a Decode bug would otherwise let the writer escape `--files-to`.

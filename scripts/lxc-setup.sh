@@ -17,9 +17,9 @@ LOW_NAME="${LOW_NAME:-diode-low}"
 HIGH_NAME="${HIGH_NAME:-diode-high}"
 LOW_IP="${LOW_IP:-10.99.0.10/24}"
 HIGH_IP="${HIGH_IP:-10.99.0.20/24}"
-DIST="${DIST:-fedora}"
-RELEASE="${RELEASE:-40}"
-ARCH="${ARCH:-amd64}"
+: "${DIST:=rockylinux}"   # linuxcontainers.org no longer publishes Fedora images
+: "${RELEASE:=9}"          # rockylinux 9 ships nft in base
+: "${ARCH:=amd64}"
 
 LXC_DIR="${LXC_DIR:-/var/lib/lxc}"
 
@@ -53,6 +53,20 @@ ensure_bridge() {
   fi
 
   ip link set "$BRIDGE" up
+
+  # If br_netfilter is loaded (e.g. because Docker is also installed
+  # on this host), bridge-forwarded packets visit the inet/ip FORWARD
+  # chain. Docker often sets that chain's policy to DROP, which would
+  # silently break our diode traffic. Opt this bridge out so our
+  # `bridge` family rules in lxc-harden.sh are the sole authority.
+  # The files exist only when br_netfilter is loaded; if it's not,
+  # there is nothing to disable and we silently skip.
+  for f in nf_call_iptables nf_call_ip6tables nf_call_arptables; do
+    if [[ -w "/sys/class/net/$BRIDGE/bridge/$f" ]]; then
+      echo 0 > "/sys/class/net/$BRIDGE/bridge/$f"
+    fi
+  done
+  log "$BRIDGE: br_netfilter disabled for this bridge (bridge family rules are authoritative)"
 }
 
 # ---------- containers ------------------------------------------------------
@@ -73,7 +87,7 @@ ensure_container() {
   else
     log "creating container $name (template: download $DIST/$RELEASE/$ARCH)"
     lxc-create -n "$name" -t download -- \
-        --dist "$DIST" --release "$RELEASE" --arch "$ARCH" --no-validate
+        --dist "$DIST" --release "$RELEASE" --arch "$ARCH"
   fi
 
   ensure_network_config "$name" "$ip_cidr"
@@ -118,6 +132,20 @@ start_container() {
   fi
 }
 
+# bring_up_eth0 — explicitly configure eth0 inside the container.
+# LXC's lxc.net.0.flags=up brings up the veth from the host POV at
+# container creation, but some distro images (rockylinux/9) ship init
+# scripts that leave the in-container interface DOWN because they
+# don't know about it. We assign the IP and bring it up unconditionally
+# here. Safe to re-run.
+bring_up_eth0() {
+  local name="$1" ip_cidr="$2"
+  # ip addr add is idempotent only by "EEXIST" return — ignore that.
+  lxc-attach -n "$name" -- ip addr add "$ip_cidr" dev eth0 2>/dev/null || true
+  lxc-attach -n "$name" -- ip link set eth0 up
+  log "$name: eth0 is up with $ip_cidr"
+}
+
 # ---------- main ------------------------------------------------------------
 
 main() {
@@ -131,6 +159,9 @@ main() {
   ensure_container "$HIGH_NAME" "$HIGH_IP"
   start_container  "$LOW_NAME"
   start_container  "$HIGH_NAME"
+
+  bring_up_eth0 "$LOW_NAME"  "$LOW_IP"
+  bring_up_eth0 "$HIGH_NAME" "$HIGH_IP"
 
   log "done."
   log "  bridge : $BRIDGE ($BRIDGE_CIDR)"
