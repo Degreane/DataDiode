@@ -212,7 +212,7 @@ ADR-0002 pins big-endian and fixed offsets. `FuzzDecode` enforces a roundtrip pr
 | ID | Risk | Severity | Fix landing |
 |---|---|---|---|
 | ~~**S-1 / T-1**~~ | ~~Unauthenticated frames; on-path attacker can inject anything~~ | **CLOSED** | ADR-0004 shipped via `--key-file`. Operators MUST configure on both sides to benefit. |
-| **I-1** | Plaintext on the wire | **HIGH** for non-physically-isolated wires | ADR-0005 (AES-256-GCM with PSK) |
+| ~~**I-1**~~ | ~~Plaintext on the wire~~ | **CLOSED** | ADR-0008 shipped — AES-256-GCM AEAD via `--key-file`. Verified on the wire via `tcpdump` (payload bytes are random when keyed). Unkeyed mode preserved as a first-class supported path. |
 | **D-3** | One-lost-packet kills a multi-chunk message | MEDIUM | ADR-0006 (FEC) |
 | **D-4** | Slow consumer causes silent drops in kernel UDP buffer | LOW–MEDIUM | Optional metrics endpoint |
 | **I-2 corollary** | Sender code present in receiver binary | LOW (already mitigated by nft) | Optional `--no-tx` build tag |

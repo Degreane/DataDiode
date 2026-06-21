@@ -46,6 +46,14 @@ A living log of recommendations made during DataDiode development. Newest date a
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
 
+### AEAD encryption (from S03-1, ADR-0008)
+- **AEAD ≠ HMAC + encryption layered**. AES-256-GCM is a single primitive that provides confidentiality + integrity + authentication. Composing HMAC on top is duplicate work and wire bytes; composing encryption underneath HMAC needs a separate MAC key. Just use AEAD.
+- **HKDF the PSK before use.** Never use the raw `--key-file` bytes as the AEAD key — derive a domain-separated subkey (`HKDF-SHA256(salt="diode-aead-v3-salt", ikm=psk, info="diode-aead-v3 chunk-aead")`). Lets the same PSK be safely reused for future subkeys (signed manifests, replay nonces).
+- **Deterministic nonce from session_id || chunk_index** — unique per (key, frame) for free. The receiver doesn't need to track nonces; the framing layer recomputes them. Per-key uniqueness: random 128-bit session_id makes cross-session collisions statistically zero; within-session monotonic chunk_index is unique by construction.
+- **Header as AAD, not as plaintext-only.** `framing.PeekKind` must remain cheap (no key required for routing), so the header bytes can't be encrypted — but they MUST be authenticated. AEAD's AAD parameter is exactly the right tool: a header bit-flip breaks the GCM tag, frame is rejected.
+- **Unkeyed mode stays first-class.** Hard requirement from the user. The wire format has TWO shapes per frame type (unkeyed = trailing sha256, keyed = AEAD tag); the flag bit `FlagEncrypted` selects. v3 receivers must support both, with mismatched expectations rejected loudly.
+- **Verify the wire with `tcpdump` after every encryption change.** A passing E2E test only proves the receiver can decode what the sender produced. A `tcpdump | strings | grep <marker>` proves the marker actually disappeared from the wire bytes — different guarantee, equally important.
+
 ### Sender state + resend + vacuum (from S02-8, ADR-0006)
 - **Sender owns the session_id.** Receiver consumes whatever sid arrives — it has no opinion. This made the resend feature compose with the existing receiver semantics (bitmap dedup + SOH idempotency) with **zero protocol changes**.
 - **Resend always pulls from the archive snapshot, not the live file.** Operators edit files; the snapshot is the only stable representation of "what the receiver was promised." Re-hashing the snapshot before resend catches accidental drift loudly.

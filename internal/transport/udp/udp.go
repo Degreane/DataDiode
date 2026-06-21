@@ -29,10 +29,10 @@ import (
 
 // DefaultReadBufferLen is the size of the userspace buffer allocated
 // per Recv call or per Run loop iteration. Must be at least
-// framing.MaxFrameLen + framing.HMACLen (signed frames are 32 bytes
+// framing.MaxFrameLen + framing.AEADTagLen (signed frames are 32 bytes
 // larger than unsigned). Anything smaller would silently truncate
 // datagrams.
-const DefaultReadBufferLen = framing.MaxFrameLen + framing.HMACLen
+const DefaultReadBufferLen = framing.MaxFrameLen + framing.AEADTagLen
 
 // DefaultSocketRcvBufBytes is the default SO_RCVBUF size we ask the
 // kernel to set on the receiver socket. At full-MTU frames this holds
@@ -175,7 +175,7 @@ func Listen(addr string, opts ...ReceiverOption) (*Receiver, error) {
 	for _, o := range opts {
 		o(&r.opts)
 	}
-	minBuf := framing.MaxFrameLen + framing.HMACLen
+	minBuf := framing.MaxFrameLen + framing.AEADTagLen
 	if r.opts.bufferLen < minBuf {
 		_ = conn.Close()
 		return nil, fmt.Errorf("udp: buffer length %d < required %d (MaxFrameLen + HMACLen)", r.opts.bufferLen, minBuf)

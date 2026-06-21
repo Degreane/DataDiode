@@ -14,6 +14,9 @@
 package integrity
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -100,4 +103,104 @@ func Verify(payload []byte, want Digest) error {
 		return ErrMismatch
 	}
 	return nil
+}
+
+// ----- HKDF-SHA256 + AEAD (ADR-0008) ---------------------------------------
+
+// AEADKeyLen is the byte length of an AES-256-GCM key.
+const AEADKeyLen = 32
+
+// AEADNonceLen is the byte length of an AES-256-GCM nonce.
+const AEADNonceLen = 12
+
+// AEADTagLen is the byte length of an AES-256-GCM authentication tag.
+const AEADTagLen = 16
+
+// ErrAEADDecrypt is returned by AEADOpen when authentication or
+// decryption fails (wrong key, tampered ciphertext, or tampered AAD).
+var ErrAEADDecrypt = errors.New("integrity: AEAD decryption failed")
+
+// HKDFSHA256 derives okmLen bytes of output keying material from the
+// input keying material `ikm` using HKDF-SHA256 with the given salt
+// and info strings. Implements RFC 5869 directly (Go stdlib has no
+// public HKDF API in this version; a ~20-line implementation is
+// simpler than pulling in golang.org/x/crypto).
+func HKDFSHA256(salt, ikm, info []byte, okmLen int) ([]byte, error) {
+	if okmLen <= 0 || okmLen > 255*sha256.Size {
+		return nil, errors.New("integrity: HKDF okmLen out of range")
+	}
+	if len(salt) == 0 {
+		salt = make([]byte, sha256.Size) // RFC 5869 §2.2: zero salt allowed
+	}
+	// Extract: PRK = HMAC-SHA256(salt, ikm)
+	mac := hmac.New(sha256.New, salt)
+	mac.Write(ikm)
+	prk := mac.Sum(nil)
+
+	// Expand: T(0)=empty; T(i)=HMAC-SHA256(PRK, T(i-1)||info||i)
+	out := make([]byte, 0, okmLen)
+	var prev []byte
+	for i := byte(1); len(out) < okmLen; i++ {
+		mac := hmac.New(sha256.New, prk)
+		mac.Write(prev)
+		mac.Write(info)
+		mac.Write([]byte{i})
+		prev = mac.Sum(nil)
+		out = append(out, prev...)
+	}
+	return out[:okmLen], nil
+}
+
+// DeriveAEADKey derives the AES-256-GCM subkey from the operator's PSK
+// using HKDF-SHA256 with the v3 domain-separation strings locked in
+// ADR-0008. The same PSK can be reused for future subkeys by changing
+// the salt / info pair.
+func DeriveAEADKey(psk []byte) ([]byte, error) {
+	const (
+		salt = "diode-aead-v3-salt"
+		info = "diode-aead-v3 chunk-aead"
+	)
+	return HKDFSHA256([]byte(salt), psk, []byte(info), AEADKeyLen)
+}
+
+// NewAEAD returns an AES-256-GCM cipher.AEAD over the given 32-byte key.
+func NewAEAD(key []byte) (cipher.AEAD, error) {
+	if len(key) != AEADKeyLen {
+		return nil, errors.New("integrity: AEAD key must be 32 bytes")
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
+// AEADSeal encrypts plaintext with key+nonce+aad and appends the
+// ciphertext+tag to dst. Returns the extended slice.
+func AEADSeal(dst, key, nonce, aad, plaintext []byte) ([]byte, error) {
+	aead, err := NewAEAD(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(nonce) != aead.NonceSize() {
+		return nil, errors.New("integrity: AEAD nonce wrong length")
+	}
+	return aead.Seal(dst, nonce, plaintext, aad), nil
+}
+
+// AEADOpen verifies-and-decrypts ciphertext+tag with key+nonce+aad and
+// appends the plaintext to dst. Returns ErrAEADDecrypt on any failure.
+func AEADOpen(dst, key, nonce, aad, ciphertext []byte) ([]byte, error) {
+	aead, err := NewAEAD(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(nonce) != aead.NonceSize() {
+		return nil, errors.New("integrity: AEAD nonce wrong length")
+	}
+	out, err := aead.Open(dst, nonce, ciphertext, aad)
+	if err != nil {
+		return nil, ErrAEADDecrypt
+	}
+	return out, nil
 }

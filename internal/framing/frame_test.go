@@ -60,13 +60,13 @@ func TestSOH_Signed(t *testing.T) {
 	if _, err := DecodeSOH(buf, key); err != nil {
 		t.Fatalf("DecodeSOH signed: %v", err)
 	}
-	// Wrong key → ErrHMACMismatch.
-	if _, err := DecodeSOH(buf, bytes.Repeat([]byte{0x00}, 32)); !errors.Is(err, ErrHMACMismatch) {
-		t.Fatalf("wrong key err: got %v, want ErrHMACMismatch", err)
+	// Wrong key → ErrDecryptFailed.
+	if _, err := DecodeSOH(buf, bytes.Repeat([]byte{0x00}, 32)); !errors.Is(err, ErrDecryptFailed) {
+		t.Fatalf("wrong key err: got %v, want ErrDecryptFailed", err)
 	}
-	// No key → ErrUnexpectedSign (signed frame to keyless receiver).
-	if _, err := DecodeSOH(buf, nil); !errors.Is(err, ErrUnexpectedSign) {
-		t.Fatalf("keyless err: got %v, want ErrUnexpectedSign", err)
+	// No key → ErrUnexpectedEncrypted (signed frame to keyless receiver).
+	if _, err := DecodeSOH(buf, nil); !errors.Is(err, ErrUnexpectedEncrypted) {
+		t.Fatalf("keyless err: got %v, want ErrUnexpectedEncrypted", err)
 	}
 }
 
@@ -74,8 +74,8 @@ func TestSOH_UnsignedRejectedByKeyedReceiver(t *testing.T) {
 	soh := SOH{SessionID: randSID(t), ChunkTotal: 1, ChunkSize: 100, TotalBytes: 50, Name: "x"}
 	buf, _ := EncodeSOH(nil, soh, nil)
 	_, err := DecodeSOH(buf, bytes.Repeat([]byte{0x11}, 32))
-	if !errors.Is(err, ErrSignedExpected) {
-		t.Fatalf("err: got %v, want ErrSignedExpected", err)
+	if !errors.Is(err, ErrEncryptedExpected) {
+		t.Fatalf("err: got %v, want ErrEncryptedExpected", err)
 	}
 }
 
@@ -162,8 +162,8 @@ func TestDATA_Signed(t *testing.T) {
 	if _, _, err := DecodeDATA(buf, key); err != nil {
 		t.Fatalf("DecodeDATA signed: %v", err)
 	}
-	if _, _, err := DecodeDATA(buf, nil); !errors.Is(err, ErrUnexpectedSign) {
-		t.Fatalf("err: got %v, want ErrUnexpectedSign", err)
+	if _, _, err := DecodeDATA(buf, nil); !errors.Is(err, ErrUnexpectedEncrypted) {
+		t.Fatalf("err: got %v, want ErrUnexpectedEncrypted", err)
 	}
 }
 

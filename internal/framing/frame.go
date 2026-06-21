@@ -1,29 +1,37 @@
-// Package framing encodes and decodes the v2 on-wire frame format.
+// Package framing encodes and decodes the v3 on-wire frame format.
 //
-// See docs/architecture/ADR-0005-session-protocol.md for the locked spec.
-// Two frame types share a common preamble (magic|version|flags|session_id):
+// See docs/architecture/ADR-0005-session-protocol.md (v2 session
+// protocol, unchanged on top) and ADR-0008-aead-encryption.md (v3
+// AEAD swap, this file). Two frame types share a common preamble
+// (magic | ver=3 | flags | session_id):
 //
-//   - SOH  (Start of Header): control frame, one per session, carries
-//     content_sha256, total_bytes, chunk_total, chunk_size, mode, filename.
-//   - DATA: chunk frame, payload up to MaxPayloadLen bytes.
+//   - SOH  (Start of Header): one per session; carries content_sha256,
+//     total_bytes, chunk_total, chunk_size, mode, filename.
+//   - DATA: a single chunk; payload up to MaxPayloadLen bytes.
 //
-// Both frame types end with a trailing SHA-256 over (header+payload),
-// plus an HMAC-SHA256 trailer when SIGNED (ADR-0004) — opt-in via the
-// caller passing a non-nil key to Encode*/Decode*.
+// Keyed (FlagEncrypted set) vs unkeyed (FlagEncrypted clear) are two
+// wire shapes selectable per-frame via the caller passing a non-nil
+// key. Unkeyed frames carry a trailing SHA-256 for integrity. Keyed
+// frames carry an AES-256-GCM tag (16 B) instead — GCM's tag covers
+// both integrity and authentication, so there is no separate sha256
+// trailer in the keyed shape. The receiver rejects mismatched
+// expectations (keyed receiver seeing an unkeyed frame, or vice
+// versa).
 package framing
 
 import (
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+
+	"github.com/degreane/datadiode/internal/integrity"
 )
 
 // Wire-format constants.
 const (
-	Version       uint8 = 0x02
+	Version       uint8 = 0x03 // ADR-0008: v3 introduces AEAD
 	HashLen             = sha256.Size
-	HMACLen             = sha256.Size
+	AEADTagLen          = integrity.AEADTagLen
 	MaxPayloadLen       = 1400
 	SessionIDLen        = 16
 
@@ -38,14 +46,13 @@ const (
 	// DATA header fixed portion: preamble + chunk_index(4) + payload_len(2) = 28 bytes.
 	DATAHeaderLen = preambleLen + 4 + 2
 
-	// MaxSOHFrameLen with the largest legal filename.
-	MaxNameLen     = 255
-	MaxSOHFrameLen = SOHHeaderLen + MaxNameLen + HashLen + HMACLen
+	// Upper bounds across both unkeyed (sha256 trailer) and keyed
+	// (AEAD tag) shapes. Used to size receiver buffers.
+	MaxNameLen      = 255
+	MaxSOHFrameLen  = SOHHeaderLen + MaxNameLen + HashLen // unkeyed is the larger (32 > 16)
+	MaxDATAFrameLen = DATAHeaderLen + MaxPayloadLen + HashLen
 
-	// MaxDATAFrameLen at the maximum payload size, signed.
-	MaxDATAFrameLen = DATAHeaderLen + MaxPayloadLen + HashLen + HMACLen
-
-	// MaxFrameLen — the larger of the two; used to size receive buffers.
+	// MaxFrameLen — used to size receive buffers.
 	MaxFrameLen = MaxDATAFrameLen
 )
 
@@ -57,7 +64,7 @@ const (
 	FlagSOH       uint8 = 0x80 // frame is an SOH (control) frame
 	FlagFinal     uint8 = 0x40 // DATA only: last chunk in the session
 	FlagRedundant uint8 = 0x20 // duplicate copy for loss tolerance
-	FlagSigned    uint8 = 0x10 // HMAC-SHA256 appended after sha256 (ADR-0004)
+	FlagEncrypted uint8 = 0x10 // payload is AES-256-GCM encrypted (ADR-0008)
 
 	flagsReserved uint8 = 0x0F
 )
@@ -86,23 +93,40 @@ func (s SessionID) String() string {
 
 // Sentinel errors.
 var (
-	ErrShort          = errors.New("framing: buffer shorter than expected")
-	ErrTooLong        = errors.New("framing: buffer longer than MaxFrameLen")
-	ErrMagic          = errors.New("framing: bad magic")
-	ErrVersion        = errors.New("framing: unsupported version")
-	ErrReservedFlags  = errors.New("framing: reserved flag bits set")
-	ErrPayloadLen     = errors.New("framing: payload_len exceeds maximum")
-	ErrLenMismatch    = errors.New("framing: declared length does not match buffer")
-	ErrChunkTotal     = errors.New("framing: chunk_total is zero")
-	ErrChunkIndex     = errors.New("framing: chunk_index >= chunk_total")
-	ErrNameLen        = errors.New("framing: name_len out of range")
-	ErrBadName        = errors.New("framing: name contains '/', '\\\\', NUL, or path traversal")
-	ErrHash           = errors.New("framing: SHA-256 mismatch")
-	ErrSignedExpected = errors.New("framing: receiver has a key but frame is not SIGNED")
-	ErrUnexpectedSign = errors.New("framing: receiver has no key but frame is SIGNED")
-	ErrHMACMismatch   = errors.New("framing: HMAC mismatch (wrong key or tampered)")
-	ErrFrameType      = errors.New("framing: wrong frame type for this Decode call")
+	ErrShort               = errors.New("framing: buffer shorter than expected")
+	ErrTooLong             = errors.New("framing: buffer longer than MaxFrameLen")
+	ErrMagic               = errors.New("framing: bad magic")
+	ErrVersion             = errors.New("framing: unsupported version")
+	ErrReservedFlags       = errors.New("framing: reserved flag bits set")
+	ErrPayloadLen          = errors.New("framing: payload_len exceeds maximum")
+	ErrLenMismatch         = errors.New("framing: declared length does not match buffer")
+	ErrChunkTotal          = errors.New("framing: chunk_total is zero")
+	ErrChunkIndex          = errors.New("framing: chunk_index >= chunk_total")
+	ErrNameLen             = errors.New("framing: name_len out of range")
+	ErrBadName             = errors.New("framing: name contains '/', '\\\\', NUL, or path traversal")
+	ErrHash                = errors.New("framing: SHA-256 mismatch")
+	ErrEncryptedExpected   = errors.New("framing: receiver has a key but frame is not ENCRYPTED")
+	ErrUnexpectedEncrypted = errors.New("framing: receiver has no key but frame is ENCRYPTED")
+	ErrDecryptFailed       = errors.New("framing: AEAD decrypt failed (wrong key or tampered)")
+	ErrFrameType           = errors.New("framing: wrong frame type for this Decode call")
 )
+
+// nonceForDATA constructs the deterministic GCM nonce for a DATA frame
+// per ADR-0008: nonce[0:8] = session_id[0:8], nonce[8:12] = chunk_index BE.
+func nonceForDATA(sid SessionID, chunkIndex uint32) []byte {
+	var n [integrity.AEADNonceLen]byte
+	copy(n[0:8], sid[0:8])
+	binary.BigEndian.PutUint32(n[8:12], chunkIndex)
+	return n[:]
+}
+
+// nonceForSOH uses the reserved sentinel 0xFFFFFFFF in the last 4 bytes.
+func nonceForSOH(sid SessionID) []byte {
+	var n [integrity.AEADNonceLen]byte
+	copy(n[0:8], sid[0:8])
+	binary.BigEndian.PutUint32(n[8:12], 0xFFFFFFFF)
+	return n[:]
+}
 
 // ----- common preamble -----------------------------------------------------
 
@@ -131,7 +155,7 @@ func PeekKind(src []byte) (isSOH bool, sid SessionID, ok bool) {
 // SOH carries session metadata. All fields are set by the caller of
 // EncodeSOH; Encode sets version + flags itself.
 type SOH struct {
-	Flags         uint8 // REDUNDANT only — SOH/SIGNED are set by Encode
+	Flags         uint8 // REDUNDANT only — SOH and ENCRYPTED are set by Encode
 	SessionID     SessionID
 	ChunkTotal    uint32
 	ChunkSize     uint32 // nominal; last chunk may be smaller
@@ -141,16 +165,22 @@ type SOH struct {
 	Name          string // basename only, no separators, no traversal
 }
 
-// EncodeSOH appends a complete SOH frame to dst. When key is non-nil,
-// the frame is SIGNED and an HMAC-SHA256 trailer is appended.
-func EncodeSOH(dst []byte, s SOH, key []byte) ([]byte, error) {
+// EncodeSOH appends a complete SOH frame to dst. When aeadKey is non-nil
+// the filename bytes are AES-256-GCM-encrypted with the header as AAD
+// and a 16-byte GCM tag is appended; no separate SHA-256 trailer is
+// emitted. When aeadKey is nil the filename is plaintext and a
+// trailing SHA-256 covers (header + name).
+//
+// Callers should not pre-set FlagSOH, FlagEncrypted, or FlagFinal in
+// s.Flags — only REDUNDANT may be pre-set.
+func EncodeSOH(dst []byte, s SOH, aeadKey []byte) ([]byte, error) {
 	if err := validateName(s.Name); err != nil {
 		return nil, err
 	}
 	if len(s.Name) > MaxNameLen {
 		return nil, ErrNameLen
 	}
-	if s.Flags&(FlagSOH|FlagSigned|FlagFinal) != 0 {
+	if s.Flags&(FlagSOH|FlagEncrypted|FlagFinal) != 0 {
 		return nil, ErrReservedFlags
 	}
 	if s.Flags&flagsReserved != 0 {
@@ -161,8 +191,8 @@ func EncodeSOH(dst []byte, s SOH, key []byte) ([]byte, error) {
 	}
 
 	flags := s.Flags | FlagSOH
-	if key != nil {
-		flags |= FlagSigned
+	if aeadKey != nil {
+		flags |= FlagEncrypted
 	}
 
 	start := len(dst)
@@ -177,27 +207,35 @@ func EncodeSOH(dst []byte, s SOH, key []byte) ([]byte, error) {
 	copy(header[38:70], s.ContentSHA256[:])
 	binary.BigEndian.PutUint32(header[70:74], s.Mode)
 	binary.BigEndian.PutUint16(header[74:76], uint16(len(s.Name)))
-
 	dst = append(dst, header...)
-	dst = append(dst, s.Name...)
 
-	sum := sha256.Sum256(dst[start:])
-	dst = append(dst, sum[:]...)
-
-	if key != nil {
-		mac := hmac.New(sha256.New, key)
-		mac.Write(dst[start : len(dst)-HashLen])
-		dst = mac.Sum(dst)
+	if aeadKey == nil {
+		// Unkeyed shape: name in plaintext, trailing sha256.
+		dst = append(dst, s.Name...)
+		sum := sha256.Sum256(dst[start:])
+		dst = append(dst, sum[:]...)
+	} else {
+		// Keyed shape: AEAD-seal name with header as AAD.
+		nonce := nonceForSOH(s.SessionID)
+		sealed, err := integrity.AEADSeal(nil, aeadKey, nonce, dst[start:start+SOHHeaderLen], []byte(s.Name))
+		if err != nil {
+			return nil, err
+		}
+		dst = append(dst, sealed...)
 	}
 	return dst, nil
 }
 
 // DecodeSOH parses a buffer as an SOH frame. Returns ErrFrameType if
 // the buffer is actually a DATA frame.
-func DecodeSOH(src []byte, key []byte) (SOH, error) {
+//
+// Auth policy (ADR-0008):
+//   - key == nil and frame is unencrypted: accepted (sha256 verified).
+//   - key == nil and frame is ENCRYPTED:   rejected (ErrUnexpectedEncrypted).
+//   - key != nil and frame is ENCRYPTED:   accepted iff AEAD verifies.
+//   - key != nil and frame is unencrypted: rejected (ErrEncryptedExpected).
+func DecodeSOH(src []byte, aeadKey []byte) (SOH, error) {
 	var s SOH
-	// Cheap preamble checks first so a DATA frame returns ErrFrameType
-	// instead of ErrShort (callers rely on that to route frames).
 	if len(src) < preambleLen {
 		return s, ErrShort
 	}
@@ -211,17 +249,17 @@ func DecodeSOH(src []byte, key []byte) (SOH, error) {
 	if flags&FlagSOH == 0 {
 		return s, ErrFrameType
 	}
-	if len(src) < SOHHeaderLen+HashLen {
+	if len(src) < SOHHeaderLen {
 		return s, ErrShort
 	}
 	if len(src) > MaxSOHFrameLen {
 		return s, ErrTooLong
 	}
-	signed := flags&FlagSigned != 0
+	encrypted := flags&FlagEncrypted != 0
 	if flags&flagsReserved != 0 {
 		return s, ErrReservedFlags
 	}
-	if err := checkSign(signed, key); err != nil {
+	if err := checkAuthFlag(encrypted, aeadKey); err != nil {
 		return s, err
 	}
 
@@ -229,9 +267,11 @@ func DecodeSOH(src []byte, key []byte) (SOH, error) {
 	if nameLen == 0 || nameLen > MaxNameLen {
 		return s, ErrNameLen
 	}
-	wantLen := SOHHeaderLen + nameLen + HashLen
-	if signed {
-		wantLen += HMACLen
+	wantLen := SOHHeaderLen + nameLen
+	if encrypted {
+		wantLen += AEADTagLen
+	} else {
+		wantLen += HashLen
 	}
 	if len(src) != wantLen {
 		return s, ErrLenMismatch
@@ -242,32 +282,34 @@ func DecodeSOH(src []byte, key []byte) (SOH, error) {
 		return s, ErrChunkTotal
 	}
 
-	hashStart := SOHHeaderLen + nameLen
-	want := sha256.Sum256(src[:hashStart])
-	if !hmac.Equal(want[:], src[hashStart:hashStart+HashLen]) {
-		return s, ErrHash
-	}
-	if signed {
-		macStart := hashStart + HashLen
-		if err := checkMAC(src[:hashStart], src[macStart:macStart+HMACLen], key); err != nil {
-			return s, err
+	var name string
+	copy(s.SessionID[:], src[6:22])
+	if !encrypted {
+		hashStart := SOHHeaderLen + nameLen
+		want := sha256.Sum256(src[:hashStart])
+		if !constantTimeEqual(want[:], src[hashStart:hashStart+HashLen]) {
+			return s, ErrHash
 		}
+		name = string(src[SOHHeaderLen:hashStart])
+	} else {
+		nonce := nonceForSOH(s.SessionID)
+		ct := src[SOHHeaderLen:]
+		pt, err := integrity.AEADOpen(nil, aeadKey, nonce, src[:SOHHeaderLen], ct)
+		if err != nil {
+			return s, ErrDecryptFailed
+		}
+		name = string(pt)
 	}
-
-	name := string(src[SOHHeaderLen:hashStart])
 	if err := validateName(name); err != nil {
 		return s, err
 	}
 
-	s = SOH{
-		Flags:      flags & ^FlagSOH & ^FlagSigned,
-		ChunkTotal: chunkTotal,
-		ChunkSize:  binary.BigEndian.Uint32(src[26:30]),
-		TotalBytes: binary.BigEndian.Uint64(src[30:38]),
-		Mode:       binary.BigEndian.Uint32(src[70:74]),
-		Name:       name,
-	}
-	copy(s.SessionID[:], src[6:22])
+	s.Flags = flags & ^FlagSOH & ^FlagEncrypted
+	s.ChunkTotal = chunkTotal
+	s.ChunkSize = binary.BigEndian.Uint32(src[26:30])
+	s.TotalBytes = binary.BigEndian.Uint64(src[30:38])
+	s.Mode = binary.BigEndian.Uint32(src[70:74])
+	s.Name = name
 	copy(s.ContentSHA256[:], src[38:70])
 	return s, nil
 }
@@ -276,27 +318,29 @@ func DecodeSOH(src []byte, key []byte) (SOH, error) {
 
 // DATA is a single chunk in a session.
 type DATA struct {
-	Flags      uint8 // REDUNDANT and/or FINAL — SOH/SIGNED are set by Encode
+	Flags      uint8 // REDUNDANT and/or FINAL — SOH and ENCRYPTED are set by Encode
 	SessionID  SessionID
 	ChunkIndex uint32
 }
 
-// EncodeDATA appends a complete DATA frame to dst. payload may be empty
-// (a FINAL-only signal); usually it's up to MaxPayloadLen bytes.
-func EncodeDATA(dst []byte, d DATA, payload []byte, key []byte) ([]byte, error) {
+// EncodeDATA appends a complete DATA frame to dst. When aeadKey is
+// non-nil the payload is encrypted with the header as AAD and a 16-byte
+// GCM tag is appended (no separate sha256). When aeadKey is nil the
+// payload is plaintext followed by a sha256 trailer over (header+payload).
+func EncodeDATA(dst []byte, d DATA, payload []byte, aeadKey []byte) ([]byte, error) {
 	if len(payload) > MaxPayloadLen {
 		return nil, ErrPayloadLen
 	}
-	if d.Flags&(FlagSOH|FlagSigned) != 0 {
+	if d.Flags&(FlagSOH|FlagEncrypted) != 0 {
 		return nil, ErrReservedFlags
 	}
 	if d.Flags&flagsReserved != 0 {
 		return nil, ErrReservedFlags
 	}
 
-	flags := d.Flags // SOH stays clear
-	if key != nil {
-		flags |= FlagSigned
+	flags := d.Flags
+	if aeadKey != nil {
+		flags |= FlagEncrypted
 	}
 
 	start := len(dst)
@@ -307,29 +351,32 @@ func EncodeDATA(dst []byte, d DATA, payload []byte, key []byte) ([]byte, error) 
 	copy(header[6:22], d.SessionID[:])
 	binary.BigEndian.PutUint32(header[22:26], d.ChunkIndex)
 	binary.BigEndian.PutUint16(header[26:28], uint16(len(payload)))
-
 	dst = append(dst, header...)
-	dst = append(dst, payload...)
 
-	sum := sha256.Sum256(dst[start:])
-	dst = append(dst, sum[:]...)
-
-	if key != nil {
-		mac := hmac.New(sha256.New, key)
-		mac.Write(dst[start : len(dst)-HashLen])
-		dst = mac.Sum(dst)
+	if aeadKey == nil {
+		dst = append(dst, payload...)
+		sum := sha256.Sum256(dst[start:])
+		dst = append(dst, sum[:]...)
+	} else {
+		nonce := nonceForDATA(d.SessionID, d.ChunkIndex)
+		sealed, err := integrity.AEADSeal(nil, aeadKey, nonce, dst[start:start+DATAHeaderLen], payload)
+		if err != nil {
+			return nil, err
+		}
+		dst = append(dst, sealed...)
 	}
 	return dst, nil
 }
 
 // DecodeDATA parses a buffer as a DATA frame.
-func DecodeDATA(src []byte, key []byte) (DATA, []byte, error) {
+//
+// On success returns the parsed header and a payload slice. The
+// returned slice aliases src for the unkeyed path and is a freshly-
+// allocated decrypt buffer for the keyed path.
+func DecodeDATA(src []byte, aeadKey []byte) (DATA, []byte, error) {
 	var d DATA
-	if len(src) < DATAHeaderLen+HashLen {
+	if len(src) < preambleLen {
 		return d, nil, ErrShort
-	}
-	if len(src) > MaxDATAFrameLen {
-		return d, nil, ErrTooLong
 	}
 	if [4]byte{src[0], src[1], src[2], src[3]} != MagicBytes {
 		return d, nil, ErrMagic
@@ -341,11 +388,17 @@ func DecodeDATA(src []byte, key []byte) (DATA, []byte, error) {
 	if flags&FlagSOH != 0 {
 		return d, nil, ErrFrameType
 	}
-	signed := flags&FlagSigned != 0
+	if len(src) < DATAHeaderLen {
+		return d, nil, ErrShort
+	}
+	if len(src) > MaxDATAFrameLen+AEADTagLen { // generous: AEAD adds 16, sha adds 32
+		return d, nil, ErrTooLong
+	}
+	encrypted := flags&FlagEncrypted != 0
 	if flags&flagsReserved != 0 {
 		return d, nil, ErrReservedFlags
 	}
-	if err := checkSign(signed, key); err != nil {
+	if err := checkAuthFlag(encrypted, aeadKey); err != nil {
 		return d, nil, err
 	}
 
@@ -353,32 +406,37 @@ func DecodeDATA(src []byte, key []byte) (DATA, []byte, error) {
 	if payloadLen > MaxPayloadLen {
 		return d, nil, ErrPayloadLen
 	}
-	wantLen := DATAHeaderLen + payloadLen + HashLen
-	if signed {
-		wantLen += HMACLen
+	wantLen := DATAHeaderLen + payloadLen
+	if encrypted {
+		wantLen += AEADTagLen
+	} else {
+		wantLen += HashLen
 	}
 	if len(src) != wantLen {
 		return d, nil, ErrLenMismatch
 	}
 
-	hashStart := DATAHeaderLen + payloadLen
-	want := sha256.Sum256(src[:hashStart])
-	if !hmac.Equal(want[:], src[hashStart:hashStart+HashLen]) {
-		return d, nil, ErrHash
-	}
-	if signed {
-		macStart := hashStart + HashLen
-		if err := checkMAC(src[:hashStart], src[macStart:macStart+HMACLen], key); err != nil {
-			return d, nil, err
-		}
-	}
-
-	d = DATA{
-		Flags:      flags & ^FlagSigned,
-		ChunkIndex: binary.BigEndian.Uint32(src[22:26]),
-	}
+	d.Flags = flags & ^FlagEncrypted
+	d.ChunkIndex = binary.BigEndian.Uint32(src[22:26])
 	copy(d.SessionID[:], src[6:22])
-	payload := src[DATAHeaderLen:hashStart]
+
+	var payload []byte
+	if !encrypted {
+		hashStart := DATAHeaderLen + payloadLen
+		want := sha256.Sum256(src[:hashStart])
+		if !constantTimeEqual(want[:], src[hashStart:hashStart+HashLen]) {
+			return d, nil, ErrHash
+		}
+		payload = src[DATAHeaderLen:hashStart]
+	} else {
+		nonce := nonceForDATA(d.SessionID, d.ChunkIndex)
+		ct := src[DATAHeaderLen:]
+		pt, err := integrity.AEADOpen(nil, aeadKey, nonce, src[:DATAHeaderLen], ct)
+		if err != nil {
+			return d, nil, ErrDecryptFailed
+		}
+		payload = pt
+	}
 	return d, payload, nil
 }
 
@@ -391,23 +449,25 @@ func (s SOH) IsRedundant() bool { return s.Flags&FlagRedundant != 0 }
 
 // ----- helpers -------------------------------------------------------------
 
-func checkSign(signed bool, key []byte) error {
-	if signed && key == nil {
-		return ErrUnexpectedSign
+func checkAuthFlag(encrypted bool, key []byte) error {
+	if encrypted && key == nil {
+		return ErrUnexpectedEncrypted
 	}
-	if !signed && key != nil {
-		return ErrSignedExpected
+	if !encrypted && key != nil {
+		return ErrEncryptedExpected
 	}
 	return nil
 }
 
-func checkMAC(signedBytes, gotMAC, key []byte) error {
-	mac := hmac.New(sha256.New, key)
-	mac.Write(signedBytes)
-	if !hmac.Equal(mac.Sum(nil), gotMAC) {
-		return ErrHMACMismatch
+func constantTimeEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	return nil
+	var v byte
+	for i := range a {
+		v |= a[i] ^ b[i]
+	}
+	return v == 0
 }
 
 func validateName(name string) error {
