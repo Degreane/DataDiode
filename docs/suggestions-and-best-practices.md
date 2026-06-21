@@ -46,6 +46,15 @@ A living log of recommendations made during DataDiode development. Newest date a
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
 
+### UDP transport design (from S01-5)
+- **Two separate types, `Sender` and `Receiver`** — not one bidirectional `Transport`. The split *is* the diode discipline: the Receiver type literally has no method that writes to the network.
+- **Reflection-based invariant test** — `TestReceiver_NoWriteMethods` enumerates the exported methods of `*Receiver` and fails if any future contributor adds a `Send`/`Write*` method. Compile-time pressure beats code-review vigilance.
+- **Discard peer addresses on Recv** — `net.UDPConn.ReadFromUDP` returns the source `*net.UDPAddr`; we throw it away. The diode does not need to know who sent a frame, and exposing that knowledge invites a future "just reply with an ACK".
+- **Cancel a blocking Read by closing the conn** — standard Go idiom; cleaner than `SetReadDeadline` loops because it avoids polling.
+- **Token-bucket rate limiter inline**, no dependency. Burst capped at 1 second of throughput. Lock is released across `time.Sleep` so concurrent senders aren't blocked on a single waiter.
+- **Buffer size validated at constructor** — reject `WithBufferLen(n)` if `n < framing.MaxFrameLen`; a too-small read buffer would silently truncate datagrams.
+- **Refuse to use builtin names as variables** (`cap`, `len`, `new`, `make`, etc.). Shadowing compiles and works but trips up readers; rename to `burst`/`limit`/etc.
+
 ### Integrity package design (from S01-4)
 - **Named `Digest` type** instead of `[]byte` everywhere — prevents mixing up "32 random bytes" with "this is a hash" and forces callers through `Equal`/`Verify` rather than `bytes.Equal`.
 - **`Hasher` / `Verifier` interfaces** behind the concrete `NewSHA256()` — lets ADR-0004 (signing/MAC) swap algorithms without touching call sites.
