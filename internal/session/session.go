@@ -9,6 +9,7 @@
 package session
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/degreane/datadiode/internal/fec"
 	"github.com/degreane/datadiode/internal/framing"
 )
 
@@ -112,6 +114,10 @@ type Session struct {
 	// sparse-mode state
 	data   *os.File
 	bitmap []byte // in-memory; persisted on completion (and could be on every chunk in a future iteration)
+
+	// FEC state (ADR-0009); zero when fec_group_size==0 on the SOH.
+	fecGroupSize uint32
+	parityChunks map[uint32][]byte // group_index → parity bytes
 
 	startedAt time.Time
 }
@@ -224,10 +230,14 @@ func (m *Manager) IngestSOH(soh framing.SOH) error {
 			StartedAt:     m.opts.Now().UTC(),
 			SpoolMode:     m.opts.SpoolMode,
 		},
-		Dir:       dir,
-		mode:      m.opts.SpoolMode,
-		bitmap:    make([]byte, (soh.ChunkTotal+7)/8),
-		startedAt: m.opts.Now(),
+		Dir:          dir,
+		mode:         m.opts.SpoolMode,
+		bitmap:       make([]byte, (soh.ChunkTotal+7)/8),
+		fecGroupSize: soh.FECGroupSize,
+		startedAt:    m.opts.Now(),
+	}
+	if soh.FECGroupSize > 0 {
+		s.parityChunks = make(map[uint32][]byte)
 	}
 
 	if err := writeMeta(dir, s.Meta); err != nil {
@@ -237,8 +247,10 @@ func (m *Manager) IngestSOH(soh framing.SOH) error {
 	}
 
 	if m.opts.SpoolMode == SpoolModeSparse {
+		// O_RDWR (not O_WRONLY) so FEC can ReadAt back the chunks it
+		// already wrote when reconstructing a missing one (ADR-0009).
 		f, err := os.OpenFile(filepath.Join(dir, "data.partial"),
-			os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+			os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o644)
 		if err != nil {
 			m.stats.SOHsRejected++
 			_ = os.RemoveAll(dir)
@@ -281,6 +293,40 @@ func (m *Manager) IngestDATA(d framing.DATA, payload []byte) error {
 		m.stats.DataDropped++
 		return nil
 	}
+
+	// FEC parity frames (ADR-0009) have chunk_index in [chunk_total,
+	// chunk_total + parity_total). Store the parity, then try to
+	// reconstruct any single-loss group it can complete.
+	if d.Flags&framing.FlagParity != 0 {
+		if s.fecGroupSize == 0 {
+			// PARITY arrived for a non-FEC session: drop.
+			m.stats.DataDropped++
+			return nil
+		}
+		parityTotal := fec.ParityTotal(s.Meta.ChunkTotal, s.fecGroupSize)
+		if d.ChunkIndex < s.Meta.ChunkTotal ||
+			d.ChunkIndex >= s.Meta.ChunkTotal+parityTotal {
+			m.stats.DataDropped++
+			return nil
+		}
+		groupIdx := d.ChunkIndex - s.Meta.ChunkTotal
+		if _, have := s.parityChunks[groupIdx]; have {
+			m.stats.DataDup++
+			return nil
+		}
+		// Copy because payload aliases the receiver's read buffer.
+		cp := make([]byte, len(payload))
+		copy(cp, payload)
+		s.parityChunks[groupIdx] = cp
+		if err := m.tryFECReconstruct(s, groupIdx); err != nil {
+			fmt.Fprintf(os.Stderr, "session: FEC reconstruct (group %d): %v\n", groupIdx, err)
+		}
+		if s.receivedCnt == s.Meta.ChunkTotal {
+			return m.finalize(s)
+		}
+		return nil
+	}
+
 	if d.ChunkIndex >= s.Meta.ChunkTotal {
 		m.stats.DataDropped++
 		return nil
@@ -315,11 +361,128 @@ func (m *Manager) IngestDATA(d framing.DATA, payload []byte) error {
 		return fmt.Errorf("session: persist bitmap: %w", err)
 	}
 
+	// If this data chunk is in a FEC group, try reconstructing any
+	// other chunk in the same group that might now be recoverable
+	// (this chunk arriving was the K-1th data + parity required to
+	// complete the group).
+	if s.fecGroupSize > 0 {
+		groupIdx := fec.GroupOf(d.ChunkIndex, s.fecGroupSize)
+		if err := m.tryFECReconstruct(s, groupIdx); err != nil {
+			fmt.Fprintf(os.Stderr, "session: FEC reconstruct (group %d): %v\n", groupIdx, err)
+		}
+	}
+
 	if s.receivedCnt == s.Meta.ChunkTotal {
 		return m.finalize(s)
 	}
 	return nil
 }
+
+// tryFECReconstruct checks the named group: if exactly one data
+// chunk is missing AND the parity for that group is present, it
+// reconstructs the missing chunk via XOR, writes it to the spool, and
+// updates the bitmap. No-op otherwise (0 missing, >1 missing, or no
+// parity yet).
+func (m *Manager) tryFECReconstruct(s *Session, groupIdx uint32) error {
+	parity, haveParity := s.parityChunks[groupIdx]
+	if !haveParity {
+		return nil
+	}
+	start, end := fec.DataIndicesInGroup(groupIdx, s.fecGroupSize, s.Meta.ChunkTotal)
+	chunkSize := int(s.Meta.ChunkSize)
+
+	// Collect the group's slots, nil for missing.
+	shards := make([][]byte, 0, end-start)
+	missing := uint32(0)
+	missingIdx := uint32(0)
+	for i := start; i < end; i++ {
+		if bitGet(s.bitmap, i) {
+			b, err := m.readChunk(s, i)
+			if err != nil {
+				return fmt.Errorf("read chunk %d for FEC: %w", i, err)
+			}
+			shards = append(shards, b)
+		} else {
+			missing++
+			missingIdx = i
+			shards = append(shards, nil)
+		}
+	}
+	if missing != 1 {
+		return nil // either complete, or unrecoverable
+	}
+	recovered, _, err := fec.Reconstruct(shards, parity, chunkSize)
+	if err != nil {
+		return err
+	}
+	// Truncate to declared payload_len for the missing slot.
+	// chunk_size for all but possibly the last; total_bytes carries the file size.
+	plen := chunkSize
+	if missingIdx == s.Meta.ChunkTotal-1 {
+		// Last data chunk: payload_len = total_bytes - (chunk_total-1)*chunk_size
+		last := int(s.Meta.TotalBytes) - int(s.Meta.ChunkTotal-1)*chunkSize
+		if last > 0 && last < chunkSize {
+			plen = last
+		}
+	}
+	recovered = recovered[:plen]
+	offset := int64(missingIdx) * int64(chunkSize)
+	switch s.mode {
+	case SpoolModeSparse:
+		if _, err := s.data.WriteAt(recovered, offset); err != nil {
+			return fmt.Errorf("write reconstructed chunk %d: %w", missingIdx, err)
+		}
+	case SpoolModeFiles:
+		name := fmt.Sprintf("%05d.bin", missingIdx)
+		path := filepath.Join(s.Dir, "chunks", name)
+		if err := os.WriteFile(path, recovered, 0o644); err != nil {
+			return fmt.Errorf("write reconstructed chunk %d: %w", missingIdx, err)
+		}
+	}
+	bitSet(s.bitmap, missingIdx)
+	s.receivedCnt++
+	if err := os.WriteFile(filepath.Join(s.Dir, "chunks.bitmap"), s.bitmap, 0o644); err != nil {
+		return fmt.Errorf("persist bitmap after FEC: %w", err)
+	}
+	// Don't trigger finalize here — let the caller's normal completion
+	// check do that, so we don't risk recursive finalize on weird timing.
+	return nil
+}
+
+// readChunk reads chunk `i` from the spool, zero-padding to chunkSize
+// if the on-disk content is shorter (i.e., the last data chunk).
+func (m *Manager) readChunk(s *Session, i uint32) ([]byte, error) {
+	cs := int(s.Meta.ChunkSize)
+	switch s.mode {
+	case SpoolModeSparse:
+		buf := make([]byte, cs)
+		offset := int64(i) * int64(cs)
+		n, err := s.data.ReadAt(buf, offset)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		// short read just means the file is shorter; pad zeros (which
+		// is what XOR semantically does anyway).
+		_ = n
+		return buf, nil
+	case SpoolModeFiles:
+		name := fmt.Sprintf("%05d.bin", i)
+		b, err := os.ReadFile(filepath.Join(s.Dir, "chunks", name))
+		if err != nil {
+			return nil, err
+		}
+		if len(b) < cs {
+			padded := make([]byte, cs)
+			copy(padded, b)
+			b = padded
+		}
+		return b, nil
+	}
+	return nil, errors.New("session: unknown spool mode")
+}
+
+// Sentinel suppress unused-import detection during incremental edits.
+var _ = bytes.Equal
 
 // finalize verifies the assembled content and moves it to FilesTo (or
 // invokes OnComplete) atomically.

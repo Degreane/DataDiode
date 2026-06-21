@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/degreane/datadiode/internal/framing"
 	"github.com/degreane/datadiode/internal/session"
@@ -17,16 +19,18 @@ import (
 // rxConfig is the parsed CLI configuration for `diode --mode=rx`.
 type rxConfig struct {
 	listen                string
-	filesTo               string // directory for completed files (default sink for --send-file flows)
-	outPath               string // when set, the assembled payload is written to this path (or "-" for stdout)
-	keyFile               string // PSK; when set, only signed frames are accepted (ADR-0004)
-	spoolDir              string // parent dir for per-session staging
-	spoolMode             string // "sparse" (default) or "files"
-	maxConc               int    // max concurrent sessions (0 = unlimited)
-	bufferLen             int    // UDP read buffer size
-	completedCache        int    // recently-completed sids cache; 0 = off
-	completedCacheDisk    bool   // persist completed sids to <spool>/completed.idx
-	completedCacheDiskCap int    // cap on entries loaded from disk at startup
+	filesTo               string        // directory for completed files (default sink for --send-file flows)
+	outPath               string        // when set, the assembled payload is written to this path (or "-" for stdout)
+	keyFile               string        // PSK; when set, only signed frames are accepted (ADR-0004)
+	spoolDir              string        // parent dir for per-session staging
+	spoolMode             string        // "sparse" (default) or "files"
+	maxConc               int           // max concurrent sessions (0 = unlimited)
+	bufferLen             int           // UDP read buffer size
+	completedCache        int           // recently-completed sids cache; 0 = off
+	completedCacheDisk    bool          // persist completed sids to <spool>/completed.idx
+	completedCacheDiskCap int           // cap on entries loaded from disk at startup
+	vacuumInterval        time.Duration // 0 = disabled (cron-driven only)
+	vacuumAge             time.Duration // entries older than this are pruned by the in-process loop
 }
 
 func defaultSpoolDir() string {
@@ -67,6 +71,8 @@ flags:`)
 	fs.BoolVar(&c.completedCacheDisk, "completed-cache-disk", true, "persist completed sids to <spool>/completed.idx so the cache survives receiver restart (ADR-0007)")
 	fs.IntVar(&c.completedCacheDiskCap, "completed-cache-disk-cap", 100000, "max records loaded from <spool>/completed.idx at startup; older entries stay on disk for --mode=vacuum to prune")
 	fs.IntVar(&c.bufferLen, "buffer-len", udp.DefaultReadBufferLen, "UDP read buffer size in bytes (>= MaxFrameLen)")
+	fs.DurationVar(&c.vacuumInterval, "vacuum-interval", 0, "if > 0, periodically prune abandoned spool sessions + old completed.idx entries (in-process; same code path as --mode=vacuum); 0 = cron-driven only")
+	fs.DurationVar(&c.vacuumAge, "vacuum-age", 24*time.Hour, "max age for spool sessions and completed.idx entries when --vacuum-interval > 0")
 
 	if err := fs.Parse(args); err != nil {
 		return c, err
@@ -140,6 +146,12 @@ func runRx(ctx context.Context, args []string) error {
 	fmt.Fprintf(os.Stderr, "diode rx: listening on %s, spool=%s, mode=%s, %s\n",
 		recv.LocalAddr(), cfg.spoolDir, cfg.spoolMode, sinkLabel)
 
+	if cfg.vacuumInterval > 0 {
+		fmt.Fprintf(os.Stderr, "diode rx: in-process vacuum every %s (age cutoff %s)\n",
+			cfg.vacuumInterval, cfg.vacuumAge)
+		go runRxVacuumLoop(ctx, cfg.spoolDir, cfg.vacuumInterval, cfg.vacuumAge)
+	}
+
 	handle := func(frame []byte) error {
 		isSOH, _, ok := framing.PeekKind(frame)
 		if !ok {
@@ -206,4 +218,36 @@ func describeSink(path string) string {
 		return "stdout"
 	}
 	return path
+}
+
+// runRxVacuumLoop fires every interval, applying the same spool +
+// completed.idx pruning that --mode=vacuum applies one-shot. Exits
+// when ctx is cancelled. Failures are logged but never stop the loop;
+// vacuum is a best-effort housekeeping task, not load-bearing.
+func runRxVacuumLoop(ctx context.Context, spool string, interval, age time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cutoff := time.Now().UTC().Add(-age)
+			// Spool sessions older than cutoff.
+			if n, err := vacuumSpool(spool, cutoff, false, false); err != nil {
+				fmt.Fprintf(os.Stderr, "diode rx: vacuum spool: %v\n", err)
+			} else if n > 0 {
+				fmt.Fprintf(os.Stderr, "diode rx: vacuum removed %d abandoned session dirs\n", n)
+			}
+			// completed.idx entries older than cutoff.
+			idx := filepath.Join(spool, "completed.idx")
+			if _, err := os.Stat(idx); err == nil {
+				if dropped, err := session.PruneCompletedIdx(idx, cutoff); err != nil {
+					fmt.Fprintf(os.Stderr, "diode rx: vacuum completed.idx: %v\n", err)
+				} else if dropped > 0 {
+					fmt.Fprintf(os.Stderr, "diode rx: vacuum dropped %d completed.idx entries\n", dropped)
+				}
+			}
+		}
+	}
 }

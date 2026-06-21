@@ -46,6 +46,12 @@ A living log of recommendations made during DataDiode development. Newest date a
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
 
+### XOR FEC + rx vacuum loop (from S03-6 + S03-8)
+- **XOR FEC closes the common case for almost free.** ~150 lines of code, no external dep, ~1/K bandwidth overhead, tolerates exactly 1 loss per group. The right starting point before reaching for Reed-Solomon (which is ~600 LoC of Galois field arithmetic or a multi-MB dep). A future ADR can add RS if multi-loss-per-group becomes a real operator concern.
+- **Open `data.partial` with `O_RDWR`, not `O_WRONLY`.** FEC reconstruction needs to read the other K-1 chunks back from disk to XOR with parity. Got bitten by this — initial implementation failed with "bad file descriptor" because the sparse write path didn't anticipate read-backs.
+- **`data_dropped=N` after a successful no-loss FEC transfer is the parity arriving too late.** When the receiver finishes from data alone, the parity chunks land in the "session no longer active" bin. Operator should interpret this as "FEC paid its insurance premium but didn't need to claim." Not a bug; consider renaming the counter to disambiguate in a future cleanup.
+- **In-process vacuum loop pairs well with the new persistence.** Long-running rx no longer requires cron + still bounds `<spool>/completed.idx` growth. `time.Ticker` with `select { ctx.Done() / ticker.C }` is the canonical Go pattern.
+
 ### Persistent completed-cache (from S03-5, ADR-0007)
 - **Disk-backed replay protection without a wire change.** The cache hydrates from `<spool>/completed.idx` at receiver startup, so replays that capture a completed session and replay-after-restart are caught by the same code path that catches mid-run replays. No version bump, no operator action beyond running with `--completed-cache-disk=true` (default).
 - **Append-then-fsync per finalize.** One small write + one fsync per completed session — negligible vs the disk write that just delivered the file. The session is already on disk; durability of the cache entry is symmetric with durability of the file.

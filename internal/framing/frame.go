@@ -29,7 +29,7 @@ import (
 
 // Wire-format constants.
 const (
-	Version       uint8 = 0x03 // ADR-0008: v3 introduces AEAD
+	Version       uint8 = 0x04 // ADR-0009: v4 adds FEC (FlagPARITY + SOH.FECGroupSize)
 	HashLen             = sha256.Size
 	AEADTagLen          = integrity.AEADTagLen
 	MaxPayloadLen       = 1400
@@ -39,9 +39,9 @@ const (
 	preambleLen = 22
 
 	// SOH header fixed portion: preamble + chunk_total(4) + chunk_size(4) +
-	// total_bytes(8) + content_sha256(32) + mode(4) + name_len(2) = 76 bytes
-	// before the variable-length name.
-	SOHHeaderLen = preambleLen + 4 + 4 + 8 + HashLen + 4 + 2
+	// total_bytes(8) + content_sha256(32) + mode(4) + name_len(2) +
+	// fec_group_size(4) = 80 bytes before the variable-length name.
+	SOHHeaderLen = preambleLen + 4 + 4 + 8 + HashLen + 4 + 2 + 4
 
 	// DATA header fixed portion: preamble + chunk_index(4) + payload_len(2) = 28 bytes.
 	DATAHeaderLen = preambleLen + 4 + 2
@@ -65,8 +65,9 @@ const (
 	FlagFinal     uint8 = 0x40 // DATA only: last chunk in the session
 	FlagRedundant uint8 = 0x20 // duplicate copy for loss tolerance
 	FlagEncrypted uint8 = 0x10 // payload is AES-256-GCM encrypted (ADR-0008)
+	FlagParity    uint8 = 0x08 // DATA only: this is a FEC parity chunk (ADR-0009)
 
-	flagsReserved uint8 = 0x0F
+	flagsReserved uint8 = 0x07
 )
 
 // SessionID is a 128-bit unique session identifier.
@@ -163,6 +164,9 @@ type SOH struct {
 	ContentSHA256 [HashLen]byte
 	Mode          uint32 // Unix file mode bits
 	Name          string // basename only, no separators, no traversal
+	FECGroupSize  uint32 // 0 = FEC off (ADR-0009); when > 0 the sender ships
+	//                       parity_total = ceil(ChunkTotal/FECGroupSize) PARITY
+	//                       chunks with chunk_index in [ChunkTotal, ChunkTotal+parity_total).
 }
 
 // EncodeSOH appends a complete SOH frame to dst. When aeadKey is non-nil
@@ -207,6 +211,7 @@ func EncodeSOH(dst []byte, s SOH, aeadKey []byte) ([]byte, error) {
 	copy(header[38:70], s.ContentSHA256[:])
 	binary.BigEndian.PutUint32(header[70:74], s.Mode)
 	binary.BigEndian.PutUint16(header[74:76], uint16(len(s.Name)))
+	binary.BigEndian.PutUint32(header[76:80], s.FECGroupSize)
 	dst = append(dst, header...)
 
 	if aeadKey == nil {
@@ -264,6 +269,7 @@ func DecodeSOH(src []byte, aeadKey []byte) (SOH, error) {
 	}
 
 	nameLen := int(binary.BigEndian.Uint16(src[74:76]))
+	fecGroupSize := binary.BigEndian.Uint32(src[76:80])
 	if nameLen == 0 || nameLen > MaxNameLen {
 		return s, ErrNameLen
 	}
@@ -310,6 +316,7 @@ func DecodeSOH(src []byte, aeadKey []byte) (SOH, error) {
 	s.TotalBytes = binary.BigEndian.Uint64(src[30:38])
 	s.Mode = binary.BigEndian.Uint32(src[70:74])
 	s.Name = name
+	s.FECGroupSize = fecGroupSize
 	copy(s.ContentSHA256[:], src[38:70])
 	return s, nil
 }

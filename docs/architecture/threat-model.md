@@ -214,7 +214,7 @@ ADR-0002 pins big-endian and fixed offsets. `FuzzDecode` enforces a roundtrip pr
 |---|---|---|---|
 | ~~**S-1 / T-1**~~ | ~~Unauthenticated frames; on-path attacker can inject anything~~ | **CLOSED** | ADR-0004 shipped via `--key-file`. Operators MUST configure on both sides to benefit. |
 | ~~**I-1**~~ | ~~Plaintext on the wire~~ | **CLOSED** | ADR-0008 shipped — AES-256-GCM AEAD via `--key-file`. Verified on the wire via `tcpdump` (payload bytes are random when keyed). Unkeyed mode preserved as a first-class supported path. |
-| **D-3** | One-lost-packet kills a multi-chunk message | MEDIUM | ADR-0006 (FEC) |
+| **D-3** | One-lost-packet kills a multi-chunk message | **PARTIALLY CLOSED** (ADR-0009 XOR FEC tolerates 1 loss per K-chunk group; Reed-Solomon for multi-loss in a future ADR) |
 | **D-4** | Slow consumer causes silent drops in kernel UDP buffer | LOW–MEDIUM | Optional metrics endpoint |
 | **I-2 corollary** | Sender code present in receiver binary | LOW (already mitigated by nft) | Optional `--no-tx` build tag |
 

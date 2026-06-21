@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/degreane/datadiode/internal/fec"
 	"github.com/degreane/datadiode/internal/framing"
 	"github.com/degreane/datadiode/internal/manifest"
 	"github.com/degreane/datadiode/internal/transport/udp"
@@ -39,6 +40,7 @@ type txConfig struct {
 	sessionIDOverride string
 	resendSID         string
 	resendLatest      string
+	fecGroupSize      int // ADR-0009: 0 = no FEC; >0 = ship 1 XOR parity per K data chunks
 }
 
 func parseTxFlags(args []string) (txConfig, error) {
@@ -75,6 +77,7 @@ flags:`)
 	fs.StringVar(&c.sessionIDOverride, "session-id", "", "force a specific session_id (hex UUID, with or without dashes); mutually exclusive with --resend")
 	fs.StringVar(&c.resendSID, "resend", "", "re-ship the previously-archived session with this id (looks it up in manifest.jsonl)")
 	fs.StringVar(&c.resendLatest, "resend-latest", "", "re-ship the most recent manifest entry whose filename matches this basename")
+	fs.IntVar(&c.fecGroupSize, "fec-group-size", 0, "ADR-0009 XOR FEC: when >0, ship 1 parity chunk per K data chunks; tolerates 1 lost chunk per group (0 = off; min 2)")
 
 	if err := fs.Parse(args); err != nil {
 		return c, err
@@ -96,6 +99,12 @@ flags:`)
 	}
 	if c.redundancyOrder != "spread" && c.redundancyOrder != "consecutive" {
 		return c, errors.New("--redundancy-order must be \"spread\" or \"consecutive\"")
+	}
+	if c.fecGroupSize == 1 {
+		return c, errors.New("--fec-group-size=1 is degenerate (parity equals data); use 0 to disable or >= 2")
+	}
+	if c.fecGroupSize < 0 {
+		return c, errors.New("--fec-group-size must be >= 0")
 	}
 	// Mutually exclusive source flags. Exactly one of {send-file, in, resend, resend-latest}.
 	srcCount := 0
@@ -166,6 +175,7 @@ func runTx(ctx context.Context, args []string) error {
 		ContentSHA256: plan.sha,
 		Mode:          plan.mode,
 		Name:          plan.name,
+		FECGroupSize:  uint32(cfg.fecGroupSize),
 	}
 
 	fmt.Fprintf(os.Stderr, "diode tx: session=%s file=%s bytes=%d chunks=%d chunk-size=%d redundancy=%dx (order=%s) soh-redundancy=%dx soh-interval=%d\n",
@@ -503,6 +513,49 @@ func shipSession(ctx context.Context, sender *udp.Sender, soh framing.SOH, conte
 				if err := maybeInterleave(); err != nil {
 					return err
 				}
+			}
+		}
+	}
+
+	// 3. FEC parity chunks (ADR-0009). One parity per group of K data
+	// chunks, computed by XORing the (zero-padded) data shards. Parity
+	// chunks ride the same encryption path as data; they carry
+	// FlagParity and a chunk_index in [chunkTotal, chunkTotal+parityTotal).
+	if cfg.fecGroupSize > 0 {
+		K := uint32(cfg.fecGroupSize)
+		parityTotal := fec.ParityTotal(chunkTotal, K)
+		for g := uint32(0); g < parityTotal; g++ {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			start, end := fec.DataIndicesInGroup(g, K, chunkTotal)
+			shards := make([][]byte, 0, end-start)
+			for i := start; i < end; i++ {
+				cs := cfg.chunkSize
+				cstart := int(i) * cs
+				cend := cstart + cs
+				if cend > len(content) {
+					cend = len(content)
+				}
+				shards = append(shards, content[cstart:cend])
+			}
+			parity, err := fec.Parity(shards, cfg.chunkSize)
+			if err != nil {
+				return fmt.Errorf("encode parity for group %d: %w", g, err)
+			}
+			d := framing.DATA{
+				Flags:      framing.FlagParity,
+				SessionID:  soh.SessionID,
+				ChunkIndex: chunkTotal + g,
+			}
+			buf = buf[:0]
+			frame, err := framing.EncodeDATA(buf, d, parity, key)
+			if err != nil {
+				return fmt.Errorf("encode parity frame group=%d: %w", g, err)
+			}
+			buf = frame
+			if err := sender.Send(frame); err != nil {
+				return fmt.Errorf("send parity frame group=%d: %w", g, err)
 			}
 		}
 	}

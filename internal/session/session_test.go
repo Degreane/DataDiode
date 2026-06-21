@@ -443,3 +443,8 @@ func TestCompletedCache_RingEviction(t *testing.T) {
 
 // Marker so the unused "time" import stays during incremental development.
 var _ = time.Time{}
+
+// readFileHelper is shared across session_test.go and fec_test.go.
+func readFileHelper(path string) ([]byte, error) {
+	return os.ReadFile(path)
+}
