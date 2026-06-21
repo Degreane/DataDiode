@@ -1,0 +1,161 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel in-flight runs on the same ref when a new commit lands.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ----------------------------------------------------------------
+  # Lint / vet / formatting — fast, runs first so trivial mistakes
+  # fail before the heavier matrix burns minutes.
+  # ----------------------------------------------------------------
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [[ -n "$out" ]]; then
+            echo "::error::files need gofmt:"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go mod tidy is a no-op
+        run: |
+          go mod tidy
+          if ! git diff --quiet -- go.mod go.sum 2>/dev/null; then
+            echo "::error::go.mod / go.sum out of date — run 'go mod tidy'"
+            git --no-pager diff -- go.mod go.sum
+            exit 1
+          fi
+
+  # ----------------------------------------------------------------
+  # Tests — native on each target OS. linux/amd64 runs the full suite
+  # including the subprocess-spawning E2E tests; macOS and Windows
+  # run them too because we explicitly want regressions there to fail
+  # loudly (UDP semantics differ on Windows in particular).
+  # ----------------------------------------------------------------
+  test:
+    name: test (${{ matrix.os }})
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: tests (incl. E2E)
+        run: go test ./... -timeout 180s -count=1
+
+  # ----------------------------------------------------------------
+  # Cross-compile build matrix — proves the binary compiles for
+  # every (GOOS, GOARCH) we care about, even on architectures we
+  # can't natively run on the public runners.
+  # ----------------------------------------------------------------
+  build-matrix:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64, ext: .exe }
+          - { goos: windows, goarch: arm64, ext: .exe }
+          - { goos: freebsd, goarch: amd64 }
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: go vet (cross-target)
+        run: go vet ./...
+
+      - name: build
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w" \
+              -o dist/diode-${GOOS}-${GOARCH}${{ matrix.ext }} \
+              ./cmd/diode
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: diode-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/diode-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          if-no-files-found: error
+          retention-days: 14
+
+  # ----------------------------------------------------------------
+  # Short fuzz run on the on-wire decoder. 30s in CI is enough to
+  # catch low-hanging crashes / ambiguous parses introduced by a
+  # change to framing; long fuzz campaigns belong in a nightly job.
+  # ----------------------------------------------------------------
+  fuzz:
+    name: fuzz framing (30s)
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: fuzz Decode
+        run: go test ./internal/framing -run=NONE -fuzz=FuzzDecode -fuzztime=30s
+
+  # ----------------------------------------------------------------
+  # Bash script syntax check — every script under scripts/ must
+  # pass `bash -n`. Cheap, catches typos early.
+  # ----------------------------------------------------------------
+  shell:
+    name: shell scripts (bash -n)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n
+        run: |
+          rc=0
+          for f in scripts/*.sh; do
+            echo "-- $f"
+            bash -n "$f" || rc=1
+          done
+          exit $rc

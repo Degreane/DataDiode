@@ -46,6 +46,17 @@ A living log of recommendations made during DataDiode development. Newest date a
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
 
+### CI design (from S01-11)
+- **Lint job is the gate** — gofmt, go vet, *and* `go mod tidy` no-op check run first. `needs: lint` on the matrix jobs means a stray missing-tidy doesn't burn a half-hour matrix run.
+- **Native tests on every supported OS**, not just linux. Windows UDP semantics differ; running the suite on `windows-latest` catches regressions that loopback-on-Linux can't.
+- **`fail-fast: false`** on matrices — surface every failure in one run, not the first one and a curtain.
+- **Concurrency group cancels in-flight runs on the same ref** — saves minutes when you push twice in a row.
+- **Cross-vet, not just cross-build.** `go build ./...` skips test files, hiding test-only compile errors on other targets (we caught Windows missing `syscall.WaitStatus.Signaled()` this way). Always `GOOS=X go vet ./...` for cross-target sanity.
+- **Per-OS build-tagged helpers** (`_unix.go` / `_windows.go`) for anything that uses POSIX-only types like `syscall.WaitStatus`. `runtime.GOOS == "windows"` at call sites is not enough — the compiler still needs the symbols to exist.
+- **Short fuzz in CI (30s)** is enough to catch most regressions in `framing.Decode` without slowing down the build. Long campaigns belong in a nightly job.
+- **Upload built artifacts** even from cross-compile jobs — operators can grab a pre-built `diode-windows-amd64.exe` from a green commit without setting up Go locally.
+- **`bash -n` job for every script** — catches typos in shell scripts the same way `go vet` catches typos in Go.
+
 ### LXC scripts (from S01-9/10/13)
 - **Hash-compare before replacing the binary.** `lxc-push.sh` SHA-256s the in-container file vs the freshly-built one and skips the install when they match. Avoids unnecessary `mv`s (and unnecessary inode churn) on re-runs after no-op rebuilds.
 - **Atomic install via tmp + mv.** Write the new binary to `diode.new`, then `mv` it on top of `diode`. Inside the same filesystem this is atomic, and any currently-running process keeps its mmap'd inode until exit. No "ETXTBSY" or "Text file busy" errors.

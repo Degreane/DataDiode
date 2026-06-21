@@ -52,7 +52,7 @@ chunk_total(2) | payload_len(4) | payload(≤1400) | sha256(32)
 | S01-8  | E2E test on loopback (Go test that spawns both binaries) | S | ✅ |
 | S01-9  | LXC scripts: `lxc-setup.sh`, `lxc-push.sh`, `lxc-harden.sh`, `check-prereqs.sh`, `_common.sh` | M | ✅ (scripts written + syntax-clean; live run pending `dnf install -y lxc`) |
 | S01-10 | `scripts/lxc-teardown.sh`: clean removal | XS | ✅ |
-| S01-11 | GitHub Actions: build matrix (linux/windows/macos × amd64/arm64); unit + E2E tests | M | ⚪ |
+| S01-11 | GitHub Actions: lint, native test on linux/macos/windows, cross-build matrix (linux/darwin/windows/freebsd × amd64/arm64), short fuzz, shell syntax | M | ✅ |
 | S01-12 | `docs/architecture/threat-model.md` (STRIDE quick pass) | S | ⚪ |
 | S01-13 | Demo script `scripts/demo.sh` — pipes a file through the two LXCs and diffs the output | S | ✅ (script written; live run pending `lxc` package) |
 | S01-14 | Sprint review + retro | XS | ⚪ |

@@ -14,8 +14,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -112,8 +112,17 @@ func startRx(t *testing.T, port int, outPath string, extraArgs ...string) *rxPro
 
 	r := &rxProc{cmd: cmd, out: outPath}
 	r.stop = func() error {
-		if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
-			return fmt.Errorf("SIGINT: %w", err)
+		// On Windows there is no portable equivalent of SIGINT for a
+		// non-console child; Process.Kill is the supported shutdown
+		// path. The stats line printed on clean shutdown is for
+		// operators; tests don't depend on it.
+		if runtime.GOOS == "windows" {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+			return nil
+		}
+		if err := sendInterrupt(cmd); err != nil {
+			return fmt.Errorf("interrupt: %w", err)
 		}
 		// Wait up to 5s for clean shutdown, then SIGKILL.
 		done := make(chan error, 1)
@@ -170,16 +179,9 @@ func readFileWhenStable(t *testing.T, path string, expectedSize int, timeout tim
 	return nil
 }
 
-func isSignalKilled(err error) bool {
-	var ee *exec.ExitError
-	if !errors.As(err, &ee) {
-		return false
-	}
-	if ws, ok := ee.Sys().(syscall.WaitStatus); ok {
-		return ws.Signaled()
-	}
-	return false
-}
+// sendInterrupt and isSignalKilled are defined per-OS in
+// e2e_unix.go / e2e_windows.go because syscall.WaitStatus has a
+// different shape on Windows (uint32) than on Unix (struct).
 
 // ---------- tests ---------------------------------------------------------
 
@@ -311,4 +313,3 @@ func TestE2E_BinaryExists(t *testing.T) {
 		t.Fatalf("diode binary missing at %s: %v", diodeBin, err)
 	}
 }
-
