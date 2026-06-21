@@ -72,7 +72,38 @@ Useful when you want to:
 
 ## 2. Creating a PSK — pick one
 
-### Linux / macOS (recommended path — `head -c` + `xxd`)
+### Easiest: the built-in `--mode=psk` (cross-platform, works everywhere `diode` does)
+
+```bash
+diode --mode=psk --file=psk.hex
+```
+
+Output:
+
+```
+diode psk: wrote 32-byte hex key to psk.hex (mode 0600)
+diode psk: file sha256 = 6335642db676bb1ef27c065cd7fd3e01be6a55ce2d00cb071960b47d51b151b3
+diode psk: distribute this file out-of-band and verify the sha256 matches on the receiving host.
+```
+
+Properties:
+- Uses Go's `crypto/rand` (kernel CSRNG: `getrandom(2)` on Linux, `arc4random_buf` on BSD/macOS, `BCryptGenRandom` on Windows).
+- Creates with **mode 0600** unconditionally (re-`chmod`'d after `O_CREATE` to defeat umask).
+- **Refuses to overwrite** an existing file (`O_EXCL`); pass `--force` if you really mean to.
+- Prints the file's **sha256 to stderr** so you can compare against the receiving host after distribution.
+
+Flags:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--file=<path>` | (required) | destination path |
+| `--format=hex\|raw` | `hex` | hex (recommended) writes 64 chars + newline; raw writes 32 binary bytes |
+| `--bytes=<N>` | `32` | key length; must be ≥ 32 |
+| `--force` | false | overwrite an existing file |
+
+This is the canonical, portable way and works identically on Linux, macOS, Windows, FreeBSD. The sections below are alternatives if you want to use OS-native tooling.
+
+### Linux / macOS (alternative — `head -c` + `xxd`)
 
 ```bash
 head -c 32 /dev/urandom | xxd -p -c 64 > psk.hex
@@ -292,7 +323,11 @@ key file across the upgrade.
 **With encryption/authentication:**
 
 ```bash
-# Linux / macOS
+# Any platform — built-in generator (recommended)
+diode --mode=psk --file=psk.hex
+# distributes the file's sha256 to stderr — note it for verification
+
+# OR Linux/macOS native tools:
 head -c 32 /dev/urandom | xxd -p -c 64 > psk.hex
 chmod 600 psk.hex
 sha256sum psk.hex           # remember this value for verification

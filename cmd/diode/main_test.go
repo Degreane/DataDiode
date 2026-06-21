@@ -23,7 +23,7 @@ func TestExtractMode(t *testing.T) {
 		{name: "version", args: []string{"--version"}, wantMode: "version", earlyExit: true},
 
 		{name: "missing", args: []string{"--dst=:9"}, wantErr: "--mode is required"},
-		{name: "bad-value", args: []string{"--mode=foo"}, wantErr: "must be tx, rx, manifest, or vacuum"},
+		{name: "bad-value", args: []string{"--mode=foo"}, wantErr: "must be tx, rx, manifest, vacuum, or psk"},
 		{name: "no-value", args: []string{"--mode"}, wantErr: "requires a value"},
 		{name: "double", args: []string{"--mode=tx", "--mode=rx"}, wantErr: "more than once"},
 

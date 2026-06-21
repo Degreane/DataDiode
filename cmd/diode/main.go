@@ -39,6 +39,7 @@ usage:
   diode --mode=rx       [flags]   one-way receiver (UDP → verify → file)
   diode --mode=manifest [flags]   print the sender's transfer history
   diode --mode=vacuum   [flags]   prune old spool / sent / manifest entries
+  diode --mode=psk      [flags]   generate a fresh pre-shared key file
   diode --version                 print version and exit
   diode --help                    show this help
 
@@ -87,6 +88,14 @@ func main() {
 				return
 			}
 			fmt.Fprintf(os.Stderr, "diode --mode=vacuum: %v\n", err)
+			os.Exit(1)
+		}
+	case "psk":
+		if err := runPSK(ctx, rest); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "diode --mode=psk: %v\n", err)
 			os.Exit(1)
 		}
 	case "version":
@@ -140,13 +149,13 @@ func extractMode(args []string) (mode string, rest []string, err error) {
 		}
 	}
 	if !seen {
-		return "", nil, fmt.Errorf("--mode is required (tx|rx|manifest|vacuum)")
+		return "", nil, fmt.Errorf("--mode is required (tx|rx|manifest|vacuum|psk)")
 	}
 	switch mode {
-	case "tx", "rx", "manifest", "vacuum":
+	case "tx", "rx", "manifest", "vacuum", "psk":
 		// ok
 	default:
-		return "", nil, fmt.Errorf("--mode must be tx, rx, manifest, or vacuum; got %q", mode)
+		return "", nil, fmt.Errorf("--mode must be tx, rx, manifest, vacuum, or psk; got %q", mode)
 	}
 	return mode, rest, nil
 }

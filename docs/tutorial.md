@@ -445,7 +445,14 @@ can forge valid-looking frames (SHA-256 is integrity, not authentication).
 Enabling HMAC-SHA256 with a pre-shared key closes that gap. The flag is
 **`--key-file=<path>`** on both sides.
 
-**Generate a key** (32 random bytes, hex-encoded):
+**Generate a key** (32 random bytes, hex-encoded) — easiest path:
+
+```bash
+diode --mode=psk --file=psk.hex
+# prints sha256 of the file to stderr; note it for verification on the other host
+```
+
+…or, if you prefer OS-native tools:
 
 ```bash
 head -c 32 /dev/urandom | xxd -p -c 64 > psk.hex
