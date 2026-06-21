@@ -19,7 +19,7 @@
 | S03-PSK | PSK creation/distribution/verification howto (`docs/psk-howto.md`) | XS | ✅ |
 | S03-1   | ADR-0008 + impl: AES-256-GCM AEAD (v3 wire), HKDF subkey, **unkeyed mode unchanged** | L | ✅ |
 | S03-2   | `--mode=psk` built-in PSK generator (cross-platform alternative to `openssl rand`) | S | ✅ |
-| S03-3   | E2E tests for resend + vacuum (carry-over from S02) | M | ⚪ |
+| S03-3   | E2E tests for resend + vacuum (carry-over from S02) | M | ✅ |
 | S03-3   | Update `scripts/demo.sh` to use the v2/v3 `--send-file` flow | S | ⚪ |
 | S03-4   | ADR-0007: replay protection (signed monotonic high-water mark) | M | ⚪ |
 | S03-5   | ADR-0009: Reed-Solomon FEC | L | ⚪ |
