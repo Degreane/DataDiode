@@ -1,8 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,33 +11,33 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/degreane/datadiode/internal/fileenv"
 	"github.com/degreane/datadiode/internal/framing"
 	"github.com/degreane/datadiode/internal/transport/udp"
 )
 
-// txConfig is the parsed CLI configuration for `diode tx`.
+// txConfig is the parsed CLI configuration for `diode --mode=tx`.
 type txConfig struct {
-	dst         string
-	chunkBytes  int
-	rateBPS     int64
-	redundancy  int
-	inputPath   string // "-" for stdin
-	sendFile    string // path to a file to wrap in a fileenv envelope; mutually exclusive with inputPath
-	keyFile     string // path to PSK file; when set every frame is signed (ADR-0004)
-	maxMessage  int64  // hard cap to keep us well under MsgID/ChunkTotal ceilings
-	heartbeatHz int
+	dst           string
+	chunkSize     int
+	rateBPS       int64
+	redundancy    int    // copies per DATA frame (>=1)
+	sohRedundancy int    // copies of the SOH (>=1)
+	inputPath     string // "-" for stdin, or a file path (used when --send-file not set)
+	sendFile      string // canonical file-transfer flag (preserves filename + mode)
+	streamName    string // logical name shipped with --in flow (if empty, derived)
+	keyFile       string // path to PSK file; opt-in HMAC per ADR-0004
+	maxBytes      int64  // hard cap on session size
 }
 
 func parseTxFlags(args []string) (txConfig, error) {
 	fs := flag.NewFlagSet("diode --mode=tx", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, `usage: diode --mode=tx --dst host:port [flags]
+		fmt.Fprintln(os.Stderr, `usage: diode --mode=tx --dst host:port (--send-file path | --in path)
 
-Reads bytes from --in (default stdin), chunks them into ADR-0002 frames,
-and writes each frame as a UDP datagram to --dst. No reverse path is
-opened. With --redundancy=N each frame is sent N times.
+Reads a file (--send-file) or arbitrary bytes (--in), computes a sha256
++ chunk plan, ships an SOH frame followed by DATA frames over one-way
+UDP. With --key-file every frame is HMAC-signed (ADR-0004).
 
 flags:`)
 		fs.PrintDefaults()
@@ -44,14 +45,15 @@ flags:`)
 
 	var c txConfig
 	fs.StringVar(&c.dst, "dst", "", "destination host:port (required)")
-	fs.IntVar(&c.chunkBytes, "chunk", framing.MaxPayloadLen, "payload bytes per frame (1..MaxPayloadLen)")
+	fs.IntVar(&c.chunkSize, "chunk-size", framing.MaxPayloadLen, "payload bytes per DATA frame (1..MaxPayloadLen)")
 	fs.Int64Var(&c.rateBPS, "rate", 0, "wire rate cap in bytes/sec (0 = unlimited)")
-	fs.IntVar(&c.redundancy, "redundancy", 1, "send each frame N times (>=1)")
-	fs.StringVar(&c.inputPath, "in", "-", "input file path (\"-\" = stdin); raw bytes, no envelope")
-	fs.StringVar(&c.sendFile, "send-file", "", "path to a file to send as a named file (wraps in DDF envelope); mutually exclusive with --in")
-	fs.StringVar(&c.keyFile, "key-file", "", "path to a pre-shared key file (>=32 bytes raw or >=64 hex chars); when set every frame is HMAC-signed (ADR-0004)")
-	fs.Int64Var(&c.maxMessage, "max-message", 64<<20, "abort if a single message exceeds N bytes (default 64 MiB)")
-	fs.IntVar(&c.heartbeatHz, "heartbeat-hz", 0, "send N heartbeat frames per second when idle (0 = off)")
+	fs.IntVar(&c.redundancy, "redundancy", 1, "send each DATA frame N times (>=1)")
+	fs.IntVar(&c.sohRedundancy, "soh-redundancy", 3, "send the SOH frame N times for loss tolerance (>=1)")
+	fs.StringVar(&c.sendFile, "send-file", "", "path to a file to send (preserves name + permission bits)")
+	fs.StringVar(&c.inputPath, "in", "", "send arbitrary bytes from this path (use \"-\" for stdin)")
+	fs.StringVar(&c.streamName, "name", "", "logical filename to advertise when sending via --in (default \"stream.bin\")")
+	fs.StringVar(&c.keyFile, "key-file", "", "PSK file path; when set every frame is HMAC-signed (ADR-0004)")
+	fs.Int64Var(&c.maxBytes, "max-bytes", 4<<30, "abort if the input exceeds N bytes (default 4 GiB)")
 
 	if err := fs.Parse(args); err != nil {
 		return c, err
@@ -60,20 +62,23 @@ flags:`)
 		fs.Usage()
 		return c, errors.New("--dst is required")
 	}
-	if c.chunkBytes < 1 || c.chunkBytes > framing.MaxPayloadLen {
-		return c, fmt.Errorf("--chunk must be in [1, %d]", framing.MaxPayloadLen)
+	if c.chunkSize < 1 || c.chunkSize > framing.MaxPayloadLen {
+		return c, fmt.Errorf("--chunk-size must be in [1, %d]", framing.MaxPayloadLen)
 	}
-	if c.redundancy < 1 {
-		return c, errors.New("--redundancy must be >= 1")
+	if c.redundancy < 1 || c.sohRedundancy < 1 {
+		return c, errors.New("--redundancy and --soh-redundancy must be >= 1")
 	}
-	if c.sendFile != "" && c.inputPath != "-" {
+	if c.sendFile == "" && c.inputPath == "" {
+		fs.Usage()
+		return c, errors.New("one of --send-file or --in is required")
+	}
+	if c.sendFile != "" && c.inputPath != "" {
 		return c, errors.New("--send-file and --in are mutually exclusive")
 	}
 	return c, nil
 }
 
-// runTx is the entry point for `diode tx`. It is called from main with
-// the post-subcommand args. ctx is cancelled on SIGINT/SIGTERM.
+// runTx is the entry point for `diode --mode=tx`.
 func runTx(ctx context.Context, args []string) error {
 	cfg, err := parseTxFlags(args)
 	if err != nil {
@@ -89,215 +94,146 @@ func runTx(ctx context.Context, args []string) error {
 		fmt.Fprintf(os.Stderr, "diode tx: signing every frame with %d-byte PSK from %s\n", len(key), cfg.keyFile)
 	}
 
+	// Read the full input into memory + compute sha256 + decide chunking.
+	// v2 sender requires upfront size; stdin streaming is a deferred feature.
+	content, name, mode, err := readInput(cfg)
+	if err != nil {
+		return err
+	}
+	if int64(len(content)) > cfg.maxBytes {
+		return fmt.Errorf("input exceeds --max-bytes (%d > %d)", len(content), cfg.maxBytes)
+	}
+
 	sender, err := udp.Dial(cfg.dst, udp.WithRateBytesPerSec(cfg.rateBPS))
 	if err != nil {
 		return err
 	}
 	defer sender.Close()
 
-	tx := &txLoop{
-		cfg:  cfg,
-		send: sender.Send,
-		out:  make([]byte, 0, framing.MaxFrameLen+framing.HMACLen),
-		buf:  make([]byte, cfg.chunkBytes),
-		key:  key,
+	// Build session metadata.
+	var sid framing.SessionID
+	if _, err := rand.Read(sid[:]); err != nil {
+		return fmt.Errorf("session id: %w", err)
+	}
+	// Mark this as RFC 4122 v4 (best-effort; the receiver doesn't care
+	// about the bit pattern, only that it's distinct).
+	sid[6] = (sid[6] & 0x0F) | 0x40
+	sid[8] = (sid[8] & 0x3F) | 0x80
+
+	chunkTotal := uint32((len(content) + cfg.chunkSize - 1) / cfg.chunkSize)
+	if chunkTotal == 0 {
+		// Empty payload: still send a single 0-byte chunk so the
+		// receiver registers the session and produces an empty file.
+		chunkTotal = 1
 	}
 
-	// --send-file wraps a file in a DDF envelope and ships it as one
-	// message. We synthesize an io.Reader over the envelope so the
-	// existing txLoop.run path stays unchanged.
-	if cfg.sendFile != "" {
-		env, err := buildFileEnvelope(cfg.sendFile, cfg.maxMessage)
-		if err != nil {
-			return err
-		}
-		tx.reader = bufio.NewReader(bytesReaderOf(env))
-		return tx.run(ctx)
+	soh := framing.SOH{
+		SessionID:     sid,
+		ChunkTotal:    chunkTotal,
+		ChunkSize:     uint32(cfg.chunkSize),
+		TotalBytes:    uint64(len(content)),
+		ContentSHA256: sha256.Sum256(content),
+		Mode:          mode,
+		Name:          name,
 	}
 
-	in, closeIn, err := openInput(cfg.inputPath)
-	if err != nil {
-		return err
-	}
-	defer closeIn()
-	tx.reader = bufio.NewReaderSize(in, 64<<10)
-	return tx.run(ctx)
-}
+	fmt.Fprintf(os.Stderr, "diode tx: session=%s file=%s bytes=%d chunks=%d chunk-size=%d redundancy=%dx soh-redundancy=%dx\n",
+		sid.String(), name, len(content), chunkTotal, cfg.chunkSize, cfg.redundancy, cfg.sohRedundancy)
 
-// buildFileEnvelope reads path into memory (bounded by maxMessage), wraps
-// it in a fileenv envelope using the file's basename and current mode,
-// and returns the envelope bytes ready to feed to txLoop.
-func buildFileEnvelope(path string, maxMessage int64) ([]byte, error) {
-	st, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("stat %s: %w", path, err)
-	}
-	if st.IsDir() {
-		return nil, fmt.Errorf("%s is a directory; this sprint only supports single-file transfer", path)
-	}
-	if st.Size() > maxMessage {
-		return nil, fmt.Errorf("file %s is %d bytes; exceeds --max-message %d", path, st.Size(), maxMessage)
-	}
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
-	}
-	name := filepath.Base(path)
-	mode := uint32(st.Mode().Perm()) // permission bits only; type bits stripped
-	env, err := fileenv.Encode(nil, name, mode, content)
-	if err != nil {
-		return nil, fmt.Errorf("encode envelope: %w", err)
-	}
-	return env, nil
-}
-
-// bytesReaderOf is a tiny adapter; we avoid a top-level "bytes" import
-// in tx.go by going through io.Reader directly.
-func bytesReaderOf(b []byte) io.Reader {
-	return &byteSliceReader{b: b}
-}
-
-type byteSliceReader struct {
-	b   []byte
-	off int
-}
-
-func (r *byteSliceReader) Read(p []byte) (int, error) {
-	if r.off >= len(r.b) {
-		return 0, io.EOF
-	}
-	n := copy(p, r.b[r.off:])
-	r.off += n
-	return n, nil
-}
-
-// openInput returns an io.Reader and a close function for the given path.
-// "-" maps to stdin (with a no-op closer).
-func openInput(path string) (io.Reader, func(), error) {
-	if path == "-" {
-		return os.Stdin, func() {}, nil
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	return f, func() { _ = f.Close() }, nil
-}
-
-// txLoop holds the per-run state for the send loop: monotonic counters,
-// reusable buffers, and the bound configuration.
-type txLoop struct {
-	cfg    txConfig
-	send   func([]byte) error
-	out    []byte // reusable frame buffer (Encode appends, we reset to [:0])
-	buf    []byte // read buffer of size cfg.chunkBytes
-	reader *bufio.Reader
-
-	// key is nil when --key-file was not set (unsigned frames, current
-	// behavior). When non-nil every frame is signed per ADR-0004.
-	key []byte
-
-	seq   uint64
-	msgID uint32
-}
-
-// run reads the input as one logical message (everything from the source
-// until EOF or maxMessage) and ships it. For sprint 01 we treat the whole
-// input as a single message; streaming-message semantics are a follow-up
-// (open question in ADR-0002).
-func (t *txLoop) run(ctx context.Context) error {
-	// Read the full message into memory so we know chunk_total up front
-	// (ADR-0002 requires it). Capped by --max-message.
-	limited := io.LimitReader(t.reader, t.cfg.maxMessage+1)
-	payload, err := io.ReadAll(limited)
-	if err != nil {
-		return fmt.Errorf("read input: %w", err)
-	}
-	if int64(len(payload)) > t.cfg.maxMessage {
-		return fmt.Errorf("input exceeds --max-message (%d bytes); aborting to avoid runaway transmit", t.cfg.maxMessage)
-	}
-	if len(payload) == 0 {
-		// Send a single FINAL heartbeat so the receiver knows we ran cleanly.
-		return t.sendHeartbeat()
-	}
-
-	chunkSize := t.cfg.chunkBytes
-	total := (len(payload) + chunkSize - 1) / chunkSize
-	if total > 0xFFFF {
-		return fmt.Errorf("message of %d bytes requires %d chunks; max is %d (raise --chunk or split)",
-			len(payload), total, 0xFFFF)
-	}
-
-	for i := range total {
+	// 1. Ship SOH N times.
+	var frameBuf []byte
+	for i := 0; i < cfg.sohRedundancy; i++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		start := i * chunkSize
-		end := min(start+chunkSize, len(payload))
+		s := soh
+		if i > 0 {
+			s.Flags |= framing.FlagRedundant
+		}
+		frameBuf = frameBuf[:0]
+		frame, err := framing.EncodeSOH(frameBuf, s, key)
+		if err != nil {
+			return fmt.Errorf("encode SOH: %w", err)
+		}
+		frameBuf = frame
+		if err := sender.Send(frame); err != nil {
+			return fmt.Errorf("send SOH: %w", err)
+		}
+	}
+
+	// 2. Ship DATA frames in order, each N times for redundancy.
+	for i := uint32(0); i < chunkTotal; i++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		start := int(i) * cfg.chunkSize
+		end := start + cfg.chunkSize
+		if end > len(content) {
+			end = len(content)
+		}
+		payload := content[start:end]
 		flags := uint8(0)
-		if i == total-1 {
+		if i == chunkTotal-1 {
 			flags |= framing.FlagFinal
 		}
-		h := framing.Header{
-			Flags:      flags,
-			Seq:        t.seq,
-			MsgID:      t.msgID,
-			ChunkIndex: uint16(i),
-			ChunkTotal: uint16(total),
-		}
-		t.seq++
-		if err := t.sendFrame(h, payload[start:end]); err != nil {
-			return err
+		base := framing.DATA{Flags: flags, SessionID: sid, ChunkIndex: i}
+
+		for r := 0; r < cfg.redundancy; r++ {
+			d := base
+			if r > 0 {
+				d.Flags |= framing.FlagRedundant
+			}
+			frameBuf = frameBuf[:0]
+			frame, err := framing.EncodeDATA(frameBuf, d, payload, key)
+			if err != nil {
+				return fmt.Errorf("encode DATA chunk=%d: %w", i, err)
+			}
+			frameBuf = frame
+			if err := sender.Send(frame); err != nil {
+				return fmt.Errorf("send DATA chunk=%d: %w", i, err)
+			}
 		}
 	}
-	t.msgID++
+
+	fmt.Fprintf(os.Stderr, "diode tx: done (%d chunks × %d copies + %d SOH copies = %d frames)\n",
+		chunkTotal, cfg.redundancy, cfg.sohRedundancy,
+		int(chunkTotal)*cfg.redundancy+cfg.sohRedundancy)
 	return nil
 }
 
-// sendFrame encodes the header+payload and writes it to the wire, plus
-// redundancy-1 marked copies for loss tolerance. When t.key is non-nil
-// every frame is also signed (FlagSigned + appended HMAC) per ADR-0004.
-func (t *txLoop) sendFrame(h framing.Header, payload []byte) error {
-	t.out = t.out[:0]
-	frame, err := framing.Encode(t.out, h, payload, t.key)
-	if err != nil {
-		return fmt.Errorf("encode frame seq=%d msg=%d chunk=%d: %w", h.Seq, h.MsgID, h.ChunkIndex, err)
-	}
-	t.out = frame
-	if err := t.send(frame); err != nil {
-		return err
-	}
-	if t.cfg.redundancy <= 1 {
-		return nil
-	}
-	// Duplicate copies carry the REDUNDANT flag so the receiver dedupes.
-	hDup := h
-	hDup.Flags |= framing.FlagRedundant
-	for range t.cfg.redundancy - 1 {
-		t.out = t.out[:0]
-		frame, err := framing.Encode(t.out, hDup, payload, t.key)
+// readInput reads the configured source and returns (content, name, mode).
+// For --send-file we use the file's basename and permission bits; for
+// --in we use --name (or "stream.bin") and a default mode.
+func readInput(cfg txConfig) ([]byte, string, uint32, error) {
+	if cfg.sendFile != "" {
+		st, err := os.Stat(cfg.sendFile)
 		if err != nil {
-			return err
+			return nil, "", 0, fmt.Errorf("stat %s: %w", cfg.sendFile, err)
 		}
-		t.out = frame
-		if err := t.send(frame); err != nil {
-			return err
+		if st.IsDir() {
+			return nil, "", 0, fmt.Errorf("%s is a directory; one-file-per-session only", cfg.sendFile)
 		}
+		content, err := os.ReadFile(cfg.sendFile)
+		if err != nil {
+			return nil, "", 0, fmt.Errorf("read %s: %w", cfg.sendFile, err)
+		}
+		return content, filepath.Base(cfg.sendFile), uint32(st.Mode().Perm()), nil
 	}
-	return nil
-}
 
-// sendHeartbeat emits a single empty FINAL+HEARTBEAT frame. Useful so
-// the receiver sees end-of-stream even when the input was empty.
-func (t *txLoop) sendHeartbeat() error {
-	h := framing.Header{
-		Flags:      framing.FlagFinal | framing.FlagHeartbeat,
-		Seq:        t.seq,
-		MsgID:      t.msgID,
-		ChunkIndex: 0,
-		ChunkTotal: 1,
+	// --in path
+	var content []byte
+	var err error
+	if cfg.inputPath == "-" {
+		content, err = io.ReadAll(os.Stdin)
+	} else {
+		content, err = os.ReadFile(cfg.inputPath)
 	}
-	t.seq++
-	t.msgID++
-	return t.sendFrame(h, nil)
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("read input: %w", err)
+	}
+	name := cfg.streamName
+	if name == "" {
+		name = "stream.bin"
+	}
+	return content, name, 0o644, nil
 }

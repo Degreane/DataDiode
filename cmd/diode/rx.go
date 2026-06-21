@@ -2,44 +2,51 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+	"runtime"
 
-	"github.com/degreane/datadiode/internal/fileenv"
 	"github.com/degreane/datadiode/internal/framing"
-	"github.com/degreane/datadiode/internal/reassembly"
+	"github.com/degreane/datadiode/internal/session"
 	"github.com/degreane/datadiode/internal/transport/udp"
 )
 
 // rxConfig is the parsed CLI configuration for `diode --mode=rx`.
 type rxConfig struct {
-	listen         string
-	outPath        string // "-" for stdout
-	filesTo        string // directory; if non-empty, payloads are parsed as DDF envelopes
-	keyFile        string // path to PSK; when set ONLY signed frames are accepted (ADR-0004)
-	maxPending     int
-	maxBytes       int
-	recentSize     int
-	bufferLen      int
-	delimiter      string // appended to each delivered message (e.g. "\n"); empty by default
-	printStatsOnly bool   // testing: never bind a socket
+	listen    string
+	filesTo   string // directory for completed files (default sink for --send-file flows)
+	outPath   string // when set, the assembled payload is written to this path (or "-" for stdout)
+	keyFile   string // PSK; when set, only signed frames are accepted (ADR-0004)
+	spoolDir  string // parent dir for per-session staging
+	spoolMode string // "sparse" (default) or "files"
+	maxConc   int    // max concurrent sessions (0 = unlimited)
+	bufferLen int    // UDP read buffer size
+}
+
+func defaultSpoolDir() string {
+	if runtime.GOOS == "windows" {
+		if t := os.Getenv("TEMP"); t != "" {
+			return t + `\diode`
+		}
+		return `C:\Windows\Temp\diode`
+	}
+	return "/var/spool/diode"
 }
 
 func parseRxFlags(args []string) (rxConfig, error) {
 	fs := flag.NewFlagSet("diode --mode=rx", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, `usage: diode --mode=rx --listen [host:]port [flags]
+		fmt.Fprintln(os.Stderr, `usage: diode --mode=rx --listen [host:]port (--files-to dir | --out path)
 
-Listens for ADR-0002 frames on UDP, verifies each frame's SHA-256,
-reassembles chunks into messages, and writes each completed message
-to --out (default stdout). The receiver opens no outbound sockets.
+Listens for v2 frames on UDP. An SOH frame opens a per-session spool
+directory under --spool; subsequent DATA frames are written there
+(sparse pwrite by default; per-chunk files with --spool-mode=files).
+When all chunks have been received, the sha256 is verified and the
+assembled file is atomic-renamed into --files-to (or written to --out).
 
 flags:`)
 		fs.PrintDefaults()
@@ -47,14 +54,13 @@ flags:`)
 
 	var c rxConfig
 	fs.StringVar(&c.listen, "listen", "", "bind address \"host:port\" or \":port\" (required)")
-	fs.StringVar(&c.outPath, "out", "-", "output file path (\"-\" = stdout); raw payload, appended")
-	fs.StringVar(&c.filesTo, "files-to", "", "directory to write incoming files (parses each message as a DDF envelope); mutually exclusive with --out")
-	fs.StringVar(&c.keyFile, "key-file", "", "path to a pre-shared key file (>=32 bytes raw or >=64 hex chars); when set ONLY signed frames are accepted (ADR-0004)")
-	fs.IntVar(&c.maxPending, "max-pending", 1024, "max incomplete messages held at once")
-	fs.IntVar(&c.maxBytes, "max-bytes", 64<<20, "max aggregate bytes held in incomplete messages")
-	fs.IntVar(&c.recentSize, "recent-msg-cache", 1024, "size of recently-delivered MsgID cache (for REDUNDANT dedup)")
-	fs.IntVar(&c.bufferLen, "buffer-len", udp.DefaultReadBufferLen, "UDP read buffer size in bytes (>= framing.MaxFrameLen)")
-	fs.StringVar(&c.delimiter, "delimiter", "", "string appended to each delivered message in --out mode (e.g. \\n)")
+	fs.StringVar(&c.filesTo, "files-to", "", "directory where completed files are atomically renamed")
+	fs.StringVar(&c.outPath, "out", "", "write the assembled payload to this path (\"-\" = stdout); mutually exclusive with --files-to")
+	fs.StringVar(&c.keyFile, "key-file", "", "PSK file path; when set ONLY signed frames are accepted (ADR-0004)")
+	fs.StringVar(&c.spoolDir, "spool", defaultSpoolDir(), "parent directory for per-session staging")
+	fs.StringVar(&c.spoolMode, "spool-mode", "sparse", "per-session layout: \"sparse\" (one data.partial + bitmap) or \"files\" (per-chunk files)")
+	fs.IntVar(&c.maxConc, "max-concurrent", 0, "max simultaneous sessions (0 = unlimited)")
+	fs.IntVar(&c.bufferLen, "buffer-len", udp.DefaultReadBufferLen, "UDP read buffer size in bytes (>= MaxFrameLen)")
 
 	if err := fs.Parse(args); err != nil {
 		return c, err
@@ -63,19 +69,20 @@ flags:`)
 		fs.Usage()
 		return c, errors.New("--listen is required")
 	}
-	minBuf := framing.MaxFrameLen + framing.HMACLen
-	if c.bufferLen < minBuf {
-		return c, fmt.Errorf("--buffer-len must be >= %d (MaxFrameLen + HMACLen)", minBuf)
+	if c.filesTo == "" && c.outPath == "" {
+		fs.Usage()
+		return c, errors.New("one of --files-to or --out is required")
 	}
-	// --files-to and --out are mutually exclusive: each message goes to
-	// either a named file or the raw stream sink, not both.
-	if c.filesTo != "" && c.outPath != "-" {
+	if c.filesTo != "" && c.outPath != "" {
 		return c, errors.New("--files-to and --out are mutually exclusive")
+	}
+	if c.bufferLen < framing.MaxFrameLen {
+		return c, fmt.Errorf("--buffer-len must be >= %d (MaxFrameLen)", framing.MaxFrameLen)
 	}
 	return c, nil
 }
 
-// runRx is the entry point for `diode --mode=rx`. Called by main.
+// runRx is the entry point for `diode --mode=rx`.
 func runRx(ctx context.Context, args []string) error {
 	cfg, err := parseRxFlags(args)
 	if err != nil {
@@ -88,24 +95,28 @@ func runRx(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "diode rx: enforcing PSK auth (%d-byte key from %s); unsigned frames will be dropped\n", len(key), cfg.keyFile)
+		fmt.Fprintf(os.Stderr, "diode rx: enforcing PSK auth (%d-byte key); unsigned frames will be dropped\n", len(key))
 	}
 
-	deliver, closeDeliver, sinkLabel, err := newDeliver(cfg)
+	// Build the session manager. For --out mode we supply an
+	// OnComplete callback that copies the assembled file to the
+	// configured sink; for --files-to we let the manager rename.
+	opts := session.Options{
+		SpoolDir:      cfg.spoolDir,
+		FilesTo:       cfg.filesTo,
+		SpoolMode:     session.SpoolMode(cfg.spoolMode),
+		MaxConcurrent: cfg.maxConc,
+	}
+	if cfg.outPath != "" {
+		opts.OnComplete = func(s *session.Session, path string) error {
+			return streamToOut(cfg.outPath, path)
+		}
+	}
+	mgr, err := session.New(opts)
 	if err != nil {
 		return err
 	}
-	defer closeDeliver()
-
-	asm, err := reassembly.New(deliver, reassembly.Options{
-		MaxPending:          cfg.maxPending,
-		MaxBytes:            cfg.maxBytes,
-		RecentDeliveredSize: cfg.recentSize,
-		Key:                 key,
-	})
-	if err != nil {
-		return err
-	}
+	defer mgr.Close()
 
 	recv, err := udp.Listen(cfg.listen, udp.WithBufferLen(cfg.bufferLen))
 	if err != nil {
@@ -113,31 +124,72 @@ func runRx(ctx context.Context, args []string) error {
 	}
 	defer recv.Close()
 
-	fmt.Fprintf(os.Stderr, "diode rx: listening on %s, writing to %s\n", recv.LocalAddr(), sinkLabel)
+	sinkLabel := "files-to=" + cfg.filesTo
+	if cfg.outPath != "" {
+		sinkLabel = "out=" + describeSink(cfg.outPath)
+	}
+	fmt.Fprintf(os.Stderr, "diode rx: listening on %s, spool=%s, mode=%s, %s\n",
+		recv.LocalAddr(), cfg.spoolDir, cfg.spoolMode, sinkLabel)
 
-	err = recv.Run(ctx, asm.Ingest)
-	s := asm.Stats()
-	fmt.Fprintf(os.Stderr, "diode rx: stopped. frames_in=%d frames_dup=%d frames_ignored=%d msgs_delivered=%d msgs_evicted=%d bytes_pending=%d\n",
-		s.FramesIn, s.FramesDup, s.FramesIgnored, s.MsgsDelivered, s.MsgsEvicted, s.BytesPending)
-	// ctx.Cancel returns context.Canceled — that's clean shutdown.
-	if err == nil || errors.Is(err, context.Canceled) {
+	handle := func(frame []byte) error {
+		isSOH, _, ok := framing.PeekKind(frame)
+		if !ok {
+			// Bad magic/version/short — silently drop. Operators see
+			// no counter for this today; could add one.
+			return nil
+		}
+		if isSOH {
+			soh, err := framing.DecodeSOH(frame, key)
+			if err != nil {
+				return nil // silently drop bad/unauthenticated SOH
+			}
+			return mgr.IngestSOH(soh)
+		}
+		d, payload, err := framing.DecodeDATA(frame, key)
+		if err != nil {
+			return nil // silently drop bad/unauthenticated DATA
+		}
+		return mgr.IngestDATA(d, payload)
+	}
+
+	runErr := recv.Run(ctx, handle)
+	s := mgr.Stats()
+	fmt.Fprintf(os.Stderr,
+		"diode rx: stopped. soh_seen=%d soh_accepted=%d soh_rejected=%d data_frames=%d data_dropped=%d data_dup=%d completed=%d hash_mismatch=%d active=%d\n",
+		s.SOHsSeen, s.SOHsAccepted, s.SOHsRejected,
+		s.DataFrames, s.DataDropped, s.DataDup,
+		s.Completed, s.HashMismatch, s.Active)
+	if runErr == nil || errors.Is(runErr, context.Canceled) {
 		return nil
 	}
-	return err
+	return runErr
 }
 
-// openOutput returns an io.Writer and a close function for the given
-// path. "-" maps to stdout (with a no-op closer). Files are opened in
-// append mode (messages are appended as they arrive).
-func openOutput(path string) (io.Writer, func(), error) {
-	if path == "-" {
-		return os.Stdout, func() {}, nil
-	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+// streamToOut copies an assembled file to the configured --out sink.
+// "-" maps to stdout; any other path is opened in append mode.
+func streamToOut(outPath, assembled string) error {
+	src, err := os.Open(assembled)
 	if err != nil {
-		return nil, nil, err
+		return fmt.Errorf("open assembled: %w", err)
 	}
-	return f, func() { _ = f.Close() }, nil
+	defer src.Close()
+
+	var sink io.Writer
+	if outPath == "-" {
+		sink = os.Stdout
+	} else {
+		f, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+		if err != nil {
+			return fmt.Errorf("open out %s: %w", outPath, err)
+		}
+		defer f.Close()
+		sink = f
+	}
+	if _, err := io.Copy(sink, src); err != nil {
+		return fmt.Errorf("copy to sink: %w", err)
+	}
+	// We owned the spool file via OnComplete contract; remove it now.
+	return os.Remove(assembled)
 }
 
 func describeSink(path string) string {
@@ -145,95 +197,4 @@ func describeSink(path string) string {
 		return "stdout"
 	}
 	return path
-}
-
-// newDeliver builds the DeliverFunc for the chosen sink mode.
-// Returns the function, a close (for the underlying file handle), and a
-// human-readable label for the startup banner.
-func newDeliver(cfg rxConfig) (reassembly.DeliverFunc, func(), string, error) {
-	// --files-to mode: each delivered message is parsed as a DDF envelope
-	// and written to <dir>/<basename> atomically.
-	if cfg.filesTo != "" {
-		if err := os.MkdirAll(cfg.filesTo, 0o755); err != nil {
-			return nil, nil, "", fmt.Errorf("mkdir %s: %w", cfg.filesTo, err)
-		}
-		dir := cfg.filesTo
-		deliver := func(payload []byte) error {
-			h, content, err := fileenv.Decode(payload)
-			if err != nil {
-				// Application-layer parse failure: log once, drop. Same
-				// discipline as bad frames at the transport layer —
-				// silent at line rate, counter elsewhere.
-				fmt.Fprintf(os.Stderr, "diode rx: dropping non-DDF or invalid envelope (%v)\n", err)
-				return nil
-			}
-			return writeFileAtomic(dir, h.Name, h.Mode, content)
-		}
-		return deliver, func() {}, "files-to=" + dir, nil
-	}
-
-	// --out mode: raw stream sink (unchanged from Sprint 01).
-	out, closeOut, err := openOutput(cfg.outPath)
-	if err != nil {
-		return nil, nil, "", err
-	}
-	delim := []byte(cfg.delimiter)
-	deliver := func(payload []byte) error {
-		if _, err := out.Write(payload); err != nil {
-			return fmt.Errorf("write output: %w", err)
-		}
-		if len(delim) > 0 {
-			if _, err := out.Write(delim); err != nil {
-				return fmt.Errorf("write delimiter: %w", err)
-			}
-		}
-		return nil
-	}
-	return deliver, closeOut, describeSink(cfg.outPath), nil
-}
-
-// writeFileAtomic writes content to <dir>/<name> via a same-directory
-// temp file + rename, then chmods to mode. On error the partial file
-// is removed. Path-traversal in name has already been rejected by
-// fileenv.Decode, but we re-baseline with filepath.Base as defense in
-// depth — a Decode() bug would otherwise let a future caller write
-// outside dir.
-func writeFileAtomic(dir, name string, mode uint32, content []byte) error {
-	safeName := filepath.Base(name)
-	if safeName == "." || safeName == ".." || safeName == "" {
-		return fmt.Errorf("refusing to write file with unsafe name %q", name)
-	}
-
-	var rnd [8]byte
-	if _, err := rand.Read(rnd[:]); err != nil {
-		return fmt.Errorf("rand: %w", err)
-	}
-	tmp := filepath.Join(dir, "."+safeName+".partial-"+hex.EncodeToString(rnd[:]))
-	final := filepath.Join(dir, safeName)
-
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return fmt.Errorf("create tmp: %w", err)
-	}
-	if _, err := f.Write(content); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
-		return fmt.Errorf("write tmp: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("close tmp: %w", err)
-	}
-	// Apply mode (permission bits only) before rename so the final
-	// inode never appears with a different mode than intended.
-	if err := os.Chmod(tmp, os.FileMode(mode)&os.ModePerm); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("chmod tmp: %w", err)
-	}
-	if err := os.Rename(tmp, final); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename: %w", err)
-	}
-	fmt.Fprintf(os.Stderr, "diode rx: wrote %s (%d bytes, mode %o)\n", final, len(content), mode&0o777)
-	return nil
 }

@@ -351,18 +351,20 @@ tail -F /var/log/messages | diode --mode=tx --dst=10.99.0.20:9999 --chunk=1200
 
 Each line on the left appears on the right, append-only.
 
-### 8b. Send a file (preserving its name and mode)
+### 8b. Send a file (v2 session protocol)
 
-This is the recommended way to ship files. It wraps each file in a small
-"DDF" envelope (name, mode bits, size, SHA-256) so the receiver can write
-it under its real basename with the original permissions and verify
-integrity end-to-end.
+The sender opens the file, computes its SHA-256 and chunk plan,
+generates a UUID session_id, ships an SOH preamble carrying the
+metadata, then ships every DATA chunk. The receiver creates a spool
+directory per session, writes chunks straight to a sparse file (or
+per-chunk files with `--spool-mode=files`), and on completion verifies
+the SHA-256 and atomic-renames the assembled file into `--files-to`.
 
 **Receiver** — point at a directory; every file delivered lands there:
 
 ```bash
 mkdir -p /srv/incoming
-diode --mode=rx --listen=:9999 --files-to=/srv/incoming
+diode --mode=rx --listen=:9999 --files-to=/srv/incoming --spool=/var/spool/diode
 ```
 
 **Sender** — one invocation per file:
@@ -372,6 +374,41 @@ diode --mode=tx --dst=10.99.0.20:9999 --send-file=/path/to/report.pdf
 diode --mode=tx --dst=10.99.0.20:9999 --send-file=/path/to/another.tar
 ```
 
+**Observing in-flight transfers** — every active session has a directory under `--spool`:
+
+```bash
+$ ls /var/spool/diode/
+3f29b1a2-c8e4-4f1d-9b6a-aeb5e7c84021/
+
+$ cat /var/spool/diode/3f29b1a2-.../meta.json
+{
+  "session_id":     "3f29b1a2-c8e4-4f1d-9b6a-aeb5e7c84021",
+  "version":        "v2",
+  "filename":       "report.pdf",
+  "mode":           "0o644",
+  "total_bytes":    1048576,
+  "chunk_size":     1400,
+  "chunk_total":    750,
+  "content_sha256": "...",
+  "started_at":     "2026-06-21T19:42:11Z",
+  "spool_mode":     "sparse"
+}
+
+$ # count missing chunks (bitmap is one bit per chunk, persisted after every chunk)
+$ xxd -p chunks.bitmap | tr -d '\n' | python3 -c "import sys; b=int(sys.stdin.read(),16); print(bin(b).count('1'),'received')"
+```
+
+When a session completes successfully, the directory is removed automatically. A session whose SHA-256 verification *fails* is **kept in the spool** for forensic inspection.
+
+**Two spool layouts** (pick via `--spool-mode`):
+
+| Mode | Files per session | Best for |
+|---|---|---|
+| `sparse` (default) | `meta.json` + `chunks.bitmap` + `data.partial` (one sparse file, chunks pwrite'd at offset) | files of any size, throughput |
+| `files` | `meta.json` + `chunks.bitmap` + `chunks/00000.bin`, `00001.bin`, ... | small files, CTF / audit / forensic inspection of individual chunks |
+
+Both modes produce **byte-identical output** on completion.
+
 The receiver logs each delivery:
 
 ```
@@ -380,25 +417,26 @@ diode rx: wrote /srv/incoming/another.tar (98765432 bytes, mode 600)
 ```
 
 **Security properties:**
-- Receiver rejects filenames containing `/`, `\`, NUL, `.`, or `..` — no path traversal can write outside `--files-to`. Tested in `internal/fileenv` (`TestDecode_RejectsPathTraversalInName`).
-- Receiver writes via tmp file + atomic rename, so a partial file is never observable at the final path.
-- SHA-256 of the content is verified before the rename; a corrupted-in-transit file is dropped, not delivered partial.
+- Receiver rejects filenames containing `/`, `\`, NUL, `.`, or `..` — no path traversal can write outside `--files-to`.
+- Receiver writes to a spool dir keyed by session_id, then atomic-renames to `--files-to` only after SHA-256 verification.
+- SHA-256 of the content is verified before the rename; a corrupted-in-transit file is dropped (spool retained for inspection), not delivered partial.
+- Unknown session_id (DATA frame arrived without its SOH) → dropped at the door with one syscall; no per-chunk decoding.
 
-**For lossy networks**, layer `--redundancy=N`:
-
-```bash
-diode --mode=tx --dst=10.99.0.20:9999 --send-file=big.tar --redundancy=3
-```
-
-Each frame ships 3 times; receiver dedupes. Up to N-1 of every N datagrams can be lost without losing the file.
-
-**For files bigger than 64 MiB** (the `--max-message` default), raise the cap:
+**For lossy networks**, layer `--redundancy=N` (each DATA frame N times) and `--soh-redundancy=N` (each SOH N times — the SOH is the most expensive frame to lose, since without it the receiver drops every DATA for that session):
 
 ```bash
-diode --mode=tx --dst=10.99.0.20:9999 --send-file=huge.iso --max-message=$((4*1024*1024*1024))
+diode --mode=tx --dst=10.99.0.20:9999 --send-file=big.tar --redundancy=3 --soh-redundancy=5
 ```
 
-(For multi-GiB transfers, expect to also raise the receiver's `--max-bytes` to match.)
+`--soh-redundancy` defaults to 3, `--redundancy` to 1.
+
+**For very large files**, the default `--max-bytes=4 GiB` cap can be raised:
+
+```bash
+diode --mode=tx --dst=10.99.0.20:9999 --send-file=huge.iso --max-bytes=$((16*1024*1024*1024))
+```
+
+The receiver writes chunks straight to disk (sparse mode pwrites at the correct offset), so receiver memory does not grow with file size.
 
 ### 8c. Authenticate every frame with a pre-shared key
 

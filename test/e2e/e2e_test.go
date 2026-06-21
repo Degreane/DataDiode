@@ -67,6 +67,32 @@ type rxProc struct {
 	stop func() error
 }
 
+// containsFlag reports whether args includes a --name=... or --name argument.
+func containsFlag(args []string, name string) bool {
+	for _, a := range args {
+		if a == name || strings.HasPrefix(a, name+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+// itoa is a tiny helper kept here for tests that build URLs / args.
+func itoa(n int) string {
+	const digits = "0123456789"
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = digits[n%10]
+		n /= 10
+	}
+	return string(buf[i:])
+}
+
 // startRx launches `diode --mode=rx` on the given port, writing to
 // outPath. It blocks until the child prints its "listening on" banner
 // so the caller is guaranteed the socket is bound before sending.
@@ -78,6 +104,12 @@ func startRx(t *testing.T, port int, outPath string, extraArgs ...string) *rxPro
 	args := []string{"--mode=rx", fmt.Sprintf("--listen=127.0.0.1:%d", port)}
 	if outPath != "" {
 		args = append(args, "--out="+outPath)
+	}
+	// Always supply a writable spool dir per test to avoid permission
+	// issues with the default /var/spool/diode. Tests may override by
+	// passing --spool= in extraArgs themselves.
+	if !containsFlag(extraArgs, "--spool") {
+		args = append(args, "--spool="+t.TempDir())
 	}
 	args = append(args, extraArgs...)
 	cmd := exec.Command(diodeBin, args...)
@@ -147,13 +179,17 @@ func startRx(t *testing.T, port int, outPath string, extraArgs ...string) *rxPro
 }
 
 // runTxOnce sends payload through a fresh `diode --mode=tx` invocation
-// and blocks until it exits.
+// via --in=- (stdin) and blocks until it exits. For file-with-name flows
+// use --send-file via extraArgs and pass nil payload.
 func runTxOnce(t *testing.T, port int, payload []byte, extraArgs ...string) {
 	t.Helper()
-	args := append([]string{
-		"--mode=tx",
-		fmt.Sprintf("--dst=127.0.0.1:%d", port),
-	}, extraArgs...)
+	args := []string{"--mode=tx", fmt.Sprintf("--dst=127.0.0.1:%d", port)}
+	// If caller did not pass --send-file, default to --in=- so the
+	// payload is piped through stdin (v2 requires an explicit source).
+	if !containsFlag(extraArgs, "--send-file") && !containsFlag(extraArgs, "--in") {
+		args = append(args, "--in=-")
+	}
+	args = append(args, extraArgs...)
 	cmd := exec.Command(diodeBin, args...)
 	cmd.Stdin = bytes.NewReader(payload)
 	cmd.Stdout = os.Stderr
@@ -216,7 +252,7 @@ func TestE2E_LargeMessage_ManyChunks(t *testing.T) {
 		payload[i] = byte(i ^ (i >> 8))
 	}
 	// chunk=1400 → ~37 chunks → exercises multi-frame reassembly.
-	runTxOnce(t, port, payload, "--chunk=1400")
+	runTxOnce(t, port, payload, "--chunk-size=1400")
 
 	got := readFileWhenStable(t, out, len(payload), 5*time.Second)
 	if !bytes.Equal(got, payload) {
@@ -253,22 +289,24 @@ func TestE2E_RedundancyDeliversOnce(t *testing.T) {
 func TestE2E_MultipleMessagesAppend(t *testing.T) {
 	port := freeUDPPort(t)
 	out := filepath.Join(t.TempDir(), "out.bin")
-	rx := startRx(t, port, out, "--delimiter=|")
+	// v2: each session writes its payload to --out via append. No
+	// per-message delimiter (the protocol moved to discrete sessions;
+	// callers can include a separator in their payload if needed).
+	rx := startRx(t, port, out)
 
 	msgs := [][]byte{
-		[]byte("one"),
-		[]byte("two"),
+		[]byte("one|"),
+		[]byte("two|"),
 		bytes.Repeat([]byte("three"), 500), // multi-chunk in the middle
-		[]byte("four"),
+		[]byte("|four|"),
 	}
 	for _, m := range msgs {
-		runTxOnce(t, port, m, "--chunk=200")
+		runTxOnce(t, port, m, "--chunk-size=200")
 	}
 
 	var want bytes.Buffer
 	for _, m := range msgs {
 		want.Write(m)
-		want.WriteByte('|')
 	}
 	got := readFileWhenStable(t, out, want.Len(), 5*time.Second)
 	if !bytes.Equal(got, want.Bytes()) {

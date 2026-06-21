@@ -149,6 +149,7 @@ func TestE2E_Signed_TxBadKeyFile(t *testing.T) {
 
 	cmd := exec.Command(diodeBin,
 		"--mode=tx", "--dst", "127.0.0.1:"+itoa(port),
+		"--in", "-",
 		"--key-file", "/nonexistent",
 	)
 	var stderr bytes.Buffer

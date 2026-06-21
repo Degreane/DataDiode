@@ -46,6 +46,18 @@ A living log of recommendations made during DataDiode development. Newest date a
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
 
+### Session protocol design (from S02-7, ADR-0005)
+- **SOH preamble is the right primitive.** Sender pre-computes sha256 + total + chunk plan; receiver provisions storage upfront. This is the canonical reliable-transport pattern (BitTorrent, Aspera, NORM, Zmodem) — once we tried to live without it (v1 msg_id model) we paid in concurrent-sender collisions, in-memory buffering, and back-pressure pathology that motivated the dead-end async-pool work.
+- **UUID v4 session_id** instead of `uint32 msg_id` — collision probability across any number of senders is essentially zero. Two `crypto/rand` reads + two bit tweaks per session.
+- **Spool-per-session directory** is genuinely the right operator UX, not just a nice-to-have. `ls /var/spool/diode/` shows every in-flight transfer; `cat meta.json` shows the plan; `xxd chunks.bitmap` shows progress. Zero special tooling needed.
+- **Two spool modes behind a single flag** (`sparse` default, `files` opt-in). Sparse = one `pwrite` per chunk, no inode pressure, no extra disk usage. Files = forensic per-chunk visibility. Trivial to support both since the public sink behavior is identical.
+- **Persist bitmap on every chunk**, not just on completion. The user explicitly wanted mid-flight visibility into what's missing; finalize-only persistence defeated that. Cost: one ~256 B write per chunk, well below the bandwidth ceiling.
+- **JSON for `meta.json`**, not YAML/INI. Stdlib, universal parser availability, schema-friendly. YAML adds a dep; INI can't represent nesting.
+- **Unknown session_id → drop with one stat() syscall**, no decode. `PeekKind` parses just the preamble (22 B) so the router can route before the expensive Decode.
+- **SHA-256 mismatch on finalize → keep the spool dir** for forensic inspection. Failing silently into the void is worse than failing loud.
+- **SOH carries `chunk_size`** so the receiver's pwrite offset arithmetic is `chunk_index * chunk_size` — no per-chunk size negotiation needed. Last chunk is naturally smaller via the DATA frame's `payload_len`.
+- **`--soh-redundancy` defaulted to 3.** Losing one DATA frame in a 750-chunk message costs 1 chunk; losing the SOH costs the entire transfer.
+
 ### HMAC signing design (from S02-6, ADR-0004)
 - **Opt-in via `--key-file=<path>` on both sides.** No `--key=<hex>` flag — process arguments leak into `ps`. The file should be `chmod 600`; we warn (don't refuse) on permissive modes, following SSH/PGP convention.
 - **Auto-detect hex vs raw** in the key file. If every byte after whitespace-strip is a hex char AND the length is even, decode as hex; otherwise treat as raw. Lets operators paste a hex string OR write a binary file.
