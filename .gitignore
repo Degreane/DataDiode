@@ -1,0 +1,21 @@
+# Binaries
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# Go
+/vendor/
+*.prof
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local config
+*.local.yaml
+*.local.toml
+.env
