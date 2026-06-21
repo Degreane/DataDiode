@@ -46,6 +46,14 @@ A living log of recommendations made during DataDiode development. Newest date a
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
 
+### Framing package implementation (from S01-3)
+- **Sentinel errors** (one per validation rule) checked with `errors.Is` — lets tests assert *which* rule rejected a frame, not just that it was rejected.
+- **Zero-allocation hot path** in `Encode`/`Decode` — caller passes a reusable `dst` slice; we hit ~4 GB/s with 0 B/op. Goal: keep it that way through the lifetime of the project.
+- **Fuzz with a property, not just "no panic"** — every successful `Decode` must roundtrip exactly through `Encode`. This catches ambiguous parses where two distinct inputs map to the same header.
+- **Golden wire test** pins the exact bytes for a known input. If it fails, ADR-0002 has been violated — revert or supersede the ADR, don't quietly update the test.
+- **Constant-time hash comparison** even though SHA-256 is strong; cheap insurance and keeps the door open for switching to a MAC later.
+- **Use `b.Loop()`** (Go 1.24+) in benchmarks instead of `for i := 0; i < b.N`; it's the modern idiom and avoids the `b.ResetTimer` dance.
+
 ### Frame format (locked by ADR-0002)
 - **Magic + version up front** — the receiver can drop garbage in one branch, and a future v1 is explicitly *not* backward-compatible (silently dropped by v0 receivers, which is the right default for a security format).
 - **All multi-byte ints big-endian.** Cheap insurance against a future ARM/RISC-V port discovering an endianness bug in production.
