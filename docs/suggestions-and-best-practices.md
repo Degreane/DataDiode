@@ -46,6 +46,15 @@ A living log of recommendations made during DataDiode development. Newest date a
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
 
+### Makefile design (from S02-5)
+- **Self-documenting via `## target: desc` comments + awk in `make help`.** Single source of truth — the comment IS the help text. No drift between docs and reality.
+- **`.DEFAULT_GOAL := help`** — bare `make` prints the menu, not an error or a build.
+- **`.SHELLFLAGS := -eu -o pipefail -c`** for safer recipes — but watch for `set -e` biting `$(command)` substitutions where the command may legitimately fail (e.g., `sha256sum missing-file`). Trail with `|| true` in those spots.
+- **Inject version/commit/date via `-ldflags -X`** in one place (the Makefile), not in source. Requires the source-side identifiers to be `var`, not `const` — Go's `-X` only sets variables.
+- **`make ci` mirrors the GitHub Actions lint+test+fuzz pipeline** so contributors can run the same checks locally before a push (or for a local-only repo, before each session ends).
+- **`make cross` matches the CI build matrix verbatim** — `linux/darwin/windows/freebsd × amd64/arm64`. If CI changes, change here too; the list lives at the top of the Makefile as `CROSS_TARGETS`.
+- **Avoid recipes that need root unless they wrap a sudo call themselves.** `make demo` does `sudo ./scripts/demo.sh` — operators always know when sudo is happening.
+
 ### LXC live-demo lessons (from S02-3)
 - **No Fedora image on linuxcontainers.org** as of 2026-06. Use `rockylinux 9` (RPM-family, has systemd, similar feel) or `alpine 3.22` (smaller). Defaults moved to rockylinux/9.
 - **lxc-create download template doesn't accept `--no-validate`.** Drop it; the template validates by default.

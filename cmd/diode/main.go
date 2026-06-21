@@ -22,9 +22,17 @@ import (
 	"syscall"
 )
 
+// version, commit, buildDate are injected at link time by the Makefile's
+// -ldflags="-X main.version=... -X main.commit=... -X main.buildDate=...".
+// They MUST be vars (not consts) for -X to work.
+var (
+	version   = "0.0.0-dev"
+	commit    = "unknown"
+	buildDate = "unknown"
+)
+
 const (
-	version = "0.0.0-dev"
-	usage   = `diode — software unidirectional gateway
+	usage = `diode — software unidirectional gateway
 
 usage:
   diode --mode=tx [flags]   one-way sender   (stdin → frames → UDP)
@@ -64,7 +72,7 @@ func main() {
 			os.Exit(1)
 		}
 	case "version":
-		fmt.Println(version)
+		fmt.Printf("diode %s (commit %s, built %s)\n", version, commit, buildDate)
 	case "help":
 		fmt.Fprint(os.Stdout, usage)
 	default:
