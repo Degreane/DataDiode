@@ -46,6 +46,13 @@ A living log of recommendations made during DataDiode development. Newest date a
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
 
+### Integrity package design (from S01-4)
+- **Named `Digest` type** instead of `[]byte` everywhere — prevents mixing up "32 random bytes" with "this is a hash" and forces callers through `Equal`/`Verify` rather than `bytes.Equal`.
+- **`Hasher` / `Verifier` interfaces** behind the concrete `NewSHA256()` — lets ADR-0004 (signing/MAC) swap algorithms without touching call sites.
+- **Pointer receiver on `Digest.Bytes()`** so the returned slice aliases the original; value receiver silently returned a slice over a stack copy.
+- **Cross-check the wrapper against `crypto/sha256` directly** in tests — proves the wrapper doesn't introduce any transformation.
+- **Golden test vectors** (empty, "abc", "The quick brown fox…") pin the algorithm; if it ever changes, the test fails loudly.
+
 ### Framing package implementation (from S01-3)
 - **Sentinel errors** (one per validation rule) checked with `errors.Is` — lets tests assert *which* rule rejected a frame, not just that it was rejected.
 - **Zero-allocation hot path** in `Encode`/`Decode` — caller passes a reusable `dst` slice; we hit ~4 GB/s with 0 B/op. Goal: keep it that way through the lifetime of the project.
