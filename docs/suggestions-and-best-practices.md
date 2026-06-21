@@ -46,6 +46,13 @@ A living log of recommendations made during DataDiode development. Newest date a
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
 
+### Reassembly design (from S01-7)
+- **Recently-delivered MsgID cache** is a real requirement, not over-engineering. Without it, `--redundancy>1` on a single-chunk message delivers the message N times: the original completes and frees the partial; the REDUNDANT copy arrives and looks like a fresh msg_id with `ChunkTotal=1`, so it completes too. Cache size 1024 (FIFO eviction) suffices.
+- **Only consult the recent cache for frames flagged REDUNDANT.** A non-REDUNDANT frame with a reused MsgID is treated as a legitimate new message (post-wrap reuse). Conservative: better to re-deliver than to silently drop after a 4B-message wrap.
+- **Two complementary backpressure knobs** on pending state: `MaxPending` (message count) and `MaxBytes` (aggregate bytes). One isn't enough — many tiny partials can blow message count without much memory; one large partial can blow memory without crossing message count.
+- **Single-goroutine ingest** — the udp.Receiver.Run loop is single-threaded, so the Reassembler needs no mutex. Document this explicitly in the package doc so a future contributor doesn't add concurrent calls.
+- **Print stats line on shutdown** (frames in/dup/ignored, msgs delivered/evicted, bytes pending). Operators need to see "you lost 7 frames" without a metrics endpoint.
+
 ### CLI design (from S01-6)
 - **Single binary, `--mode=tx|rx` flag** rather than two binaries or subcommands. Distribution is one file; both LXC containers get the same artifact. Security trade-off (sender code linked into receiver binary) is marginal — attacker with code execution on the receiver can write raw UDP in a few syscalls anyway.
 - **Pre-parser for `--mode`** before handing remaining args to a mode-specific `flag.FlagSet`. The stdlib `flag` package errors on unknown flags, so a top-level FlagSet that doesn't know mode-specific flags would reject them.
