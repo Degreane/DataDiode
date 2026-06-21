@@ -46,6 +46,15 @@ A living log of recommendations made during DataDiode development. Newest date a
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
 
+### E2E tests (from S01-8)
+- **Spawn the real binary, not the in-process types.** Unit tests already cover the in-process Sender/Receiver path; E2E catches drift in the CLI surface, signal handling, real UDP stack, and the actual kernel buffer behavior. Both are needed.
+- **Build once in `TestMain`** to a tempdir; share the binary across all tests in the package. Per-test builds would inflate runtime several-fold.
+- **Block on the receiver's "listening on" banner** before sending. A naive sleep (e.g. 100ms) is racy on slow CI; parsing stderr is deterministic and faster on healthy hosts.
+- **Poll for output stability**, don't fixed-sleep. `readFileWhenStable` checks size every 10ms up to a timeout — fast on healthy hosts, only slow when something is genuinely broken.
+- **Use ephemeral UDP ports** (`net.ListenUDP` with port 0, close, reuse). Race window is tiny on a single test host and avoids hardcoded port conflicts in CI.
+- **Treat `signal.Signaled` exit as success** for SIGINT'd subprocesses. `exec.ExitError` with a signal is not a test failure.
+- **Stats line in subprocess stderr is the assertion surface.** Tests read `frames_in / dup / delivered` — proves the diode's internal counters match expectations without bolting on a metrics endpoint just for tests.
+
 ### Reassembly design (from S01-7)
 - **Recently-delivered MsgID cache** is a real requirement, not over-engineering. Without it, `--redundancy>1` on a single-chunk message delivers the message N times: the original completes and frees the partial; the REDUNDANT copy arrives and looks like a fresh msg_id with `ChunkTotal=1`, so it completes too. Cache size 1024 (FIFO eviction) suffices.
 - **Only consult the recent cache for frames flagged REDUNDANT.** A non-REDUNDANT frame with a reused MsgID is treated as a legitimate new message (post-wrap reuse). Conservative: better to re-deliver than to silently drop after a 4B-message wrap.
