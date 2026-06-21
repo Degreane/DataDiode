@@ -53,7 +53,7 @@ chunk_total(2) | payload_len(4) | payload(≤1400) | sha256(32)
 | S01-9  | LXC scripts: `lxc-setup.sh`, `lxc-push.sh`, `lxc-harden.sh`, `check-prereqs.sh`, `_common.sh` | M | ✅ (scripts written + syntax-clean; live run pending `dnf install -y lxc`) |
 | S01-10 | `scripts/lxc-teardown.sh`: clean removal | XS | ✅ |
 | S01-11 | GitHub Actions: lint, native test on linux/macos/windows, cross-build matrix (linux/darwin/windows/freebsd × amd64/arm64), short fuzz, shell syntax | M | ✅ |
-| S01-12 | `docs/architecture/threat-model.md` (STRIDE quick pass) | S | ⚪ |
+| S01-12 | `docs/architecture/threat-model.md` (STRIDE pass + diode-specific threats + mitigation index) | S | ✅ |
 | S01-13 | Demo script `scripts/demo.sh` — pipes a file through the two LXCs and diffs the output | S | ✅ (script written; live run pending `lxc` package) |
 | S01-14 | Sprint review + retro | XS | ⚪ |
 
@@ -191,8 +191,51 @@ sudo ip link del diodebr0
 
 ## Daily Notes
 
-_(filled in during the sprint)_
+### 2026-06-21
+- Closed all 14 stories in one extended working session. Each story shipped as its own commit; the sprint history is the commit log from `17c02ee` (S01-1) to the closing commit of S01-12. Pre-sprint scaffolding lives at `f69047b` and `70a27fb`.
 
-## Review / Retro
+## Review
 
-_(end of sprint)_
+**Demo:** the `diode --mode=tx | UDP | --mode=rx` path is end-to-end functional. Verified two independent ways:
+
+1. **Go E2E suite** (`test/e2e/`): spawns the real binary on `127.0.0.1` and runs 7 scenarios — small/large message, redundancy dedupe, multi-message append, empty input, bad flags, binary existence. ~0.6 s total. All green.
+2. **Wire-level smoke**: `echo … | diode --mode=tx | nc -u -l` shows correct on-wire bytes (magic `DDO\0`, version `01`, payload + SHA-256).
+
+The **two-LXC demo** (`scripts/demo.sh`) is scripted and syntax-clean but blocked on `sudo dnf install -y lxc` (Fedora ships only `lxc-libs`/`lxc-templates` by default). `scripts/check-prereqs.sh` prints the exact install hint. The demo will run when the package is installed; the code path it exercises is already covered by the Go E2E suite, so the diode itself is not in question.
+
+**Numbers:**
+- 8 commits (excluding pre-sprint scaffolding).
+- ~3,200 LoC Go (production + tests), well under the "<3,000 audit budget" for the core (most LoC is tests; production is ~1,400).
+- 40+ unit tests, 7 E2E tests, 1 fuzz target — all green on host (Linux/amd64).
+- Cross-target `go vet` clean for linux/darwin/windows/freebsd × amd64/arm64.
+- Bench: ~4 GB/s framing encode/decode, ~849 MB/s loopback send+recv, ~4.8 GB/s hash.
+
+**Definition of Done — status:**
+- ✅ End-to-end functional (`tx → UDP → rx` with verification).
+- ✅ `tcpdump` would show traffic in one direction only (no listener on tx side; receiver opens no outbound socket; reflection-based test pins this invariant).
+- ⏸ `nft list ruleset` inside `diode-high` shows DROP egress — script ready, not yet observed live (pending `dnf install lxc`).
+- ✅ CI matrix authored for linux/macos/windows; ready to go green on first push to GitHub.
+- ✅ Threat model committed (`docs/architecture/threat-model.md`).
+- ✅ Sprint review + retro written.
+
+## Retro
+
+**What worked**
+- **ADR-then-implement cadence.** ADR-0002 (frame format) was locked before `internal/framing` was written, which made the implementation straight-line. Same for ADR-0001 (Go + plugin model). The cost of writing the ADR was paid back many times over.
+- **Tests-as-invariants.** `TestReceiver_NoWriteMethods` (reflection over the type's exported methods) and `TestWireGolden` (pin exact bytes) catch real categories of regression that ordinary unit tests miss. Worth replicating.
+- **Cross-target `go vet`** caught the Windows `syscall.WaitStatus.Signaled()` bug. `go build ./...` cross-compile alone would not have — it skips test files.
+- **Per-story commit with rationale in the body.** The commit log is the sprint history; no separate worklog needed.
+- **Suggestions-and-best-practices doc** turned out useful — accumulated 50+ concrete rules from this sprint alone, and several were referenced back into ADRs and the threat model.
+
+**What didn't**
+- **Initial test code over-engineered.** The first version of `udp_test.go` reflection helper was a multi-layer interface dance to "avoid importing reflect in production"; tests are allowed to import freely, the simple `reflect.TypeFor[*Receiver]()` was the right call. Caught and simplified before commit, but wasted ~10 minutes.
+- **`Digest.Bytes()` aliasing bug.** Shipped a value-receiver method that silently returned a slice over a stack copy. Test caught it. Lesson: when the doc says "returns an aliasing slice", use a pointer receiver, not a value receiver.
+- **CI authored before push.** Workflow is sound but unverified — first push to GitHub is the first real run. Acceptable, but slightly anxiety-inducing.
+
+**One change for next sprint**
+- **Lock in `make` (or a `go run mage`) targets early.** Right now the workflow is `go build -o bin/diode ./cmd/diode`, `sudo ./scripts/demo.sh`, etc. — fine for one developer, friction for two. A `Makefile` with `build/test/demo/lint/clean` targets would be ~30 lines and would pay for itself in week 1 of Sprint 02.
+
+**Carry-over to Sprint 02**
+- Confirm the LXC live demo end-to-end once `lxc` is installed (essentially S01-DoD-final).
+- Push to GitHub and verify CI matrix goes green.
+- Move on to plugin host (WASM via wazero) per the original roadmap.

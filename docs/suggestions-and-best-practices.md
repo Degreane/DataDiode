@@ -46,6 +46,13 @@ A living log of recommendations made during DataDiode development. Newest date a
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
 
+### Threat-modeling discipline (from S01-12)
+- **Write the threat model after the code, but before the next sprint** — too early and you're guessing what'll get built; too late and you've shipped the threats. End of sprint is the right beat.
+- **STRIDE alone is not enough** for a diode. Add a "diode-specific" section for covert channels, replay, IP fragmentation, parser ambiguity — the threats that don't cleanly fit S/T/R/I/D/E but matter for *this* product.
+- **Every mitigation has a code pointer.** A threat model that lists "we mitigate X" without saying *where* is just optimism. Section 8 of `threat-model.md` is a flat index from mitigation name → file path / test name.
+- **Be explicit about HIGH residual risk in v0** (S-1 unauthenticated, I-1 plaintext). An operator must not deploy the diode in the wrong threat environment because the doc was diplomatic about its gaps.
+- **Reflection-based invariant tests** (`TestReceiver_NoWriteMethods`, `TestWireGolden`) are the strongest way to encode "this property must remain true." Cite them directly in the mitigation index so a future contributor can't quietly delete the test.
+
 ### CI design (from S01-11)
 - **Lint job is the gate** — gofmt, go vet, *and* `go mod tidy` no-op check run first. `needs: lint` on the matrix jobs means a stray missing-tidy doesn't burn a half-hour matrix run.
 - **Native tests on every supported OS**, not just linux. Windows UDP semantics differ; running the suite on `windows-latest` catches regressions that loopback-on-Linux can't.

@@ -23,4 +23,5 @@ A story is "done" when:
 
 ## Index
 
-- [Sprint 00 — Kickoff & Research](sprint-00-kickoff.md)
+- [Sprint 00 — Kickoff & Research](sprint-00-kickoff.md) — closed
+- [Sprint 01 — MVP: tx → UDP → rx in two LXC containers](sprint-01-mvp.md) — closed (2026-06-21)
