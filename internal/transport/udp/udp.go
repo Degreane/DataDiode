@@ -128,8 +128,8 @@ func (s *Sender) LocalAddr() net.Addr { return s.conn.LocalAddr() }
 type ReceiverOption func(*receiverOpts)
 
 type receiverOpts struct {
-	bufferLen     int
-	socketRcvBuf  int
+	bufferLen    int
+	socketRcvBuf int
 }
 
 // WithBufferLen sets the read buffer size in bytes. Must be at least
