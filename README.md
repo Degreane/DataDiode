@@ -116,9 +116,38 @@ datadiode/
     └── e2e/
 ```
 
+## Quick start (Fedora + plain LXC)
+
+```bash
+# 0. Verify prereqs (Go + lxc + lxc-templates + nftables)
+./scripts/check-prereqs.sh
+# If anything is missing:
+sudo dnf install -y lxc lxc-templates nftables golang
+
+# 1. End-to-end demo across two LXC containers
+sudo ./scripts/demo.sh
+# Output ends with "MATCH — diode roundtrip succeeded".
+
+# 2. Tear down when done
+sudo ./scripts/lxc-teardown.sh
+```
+
+The demo orchestrates `lxc-setup.sh` → `lxc-push.sh` → `lxc-harden.sh`, then launches
+`diode --mode=rx` in `diode-high`, pipes a file through `diode --mode=tx` in
+`diode-low`, and SHA-256-diffs the input against the reconstructed output.
+
+For loopback-only testing on the host (no LXC needed):
+
+```bash
+go test ./...                              # unit + reassembly tests
+go test ./test/e2e/ -v                     # spawns the real binary on 127.0.0.1
+go build -o /tmp/diode ./cmd/diode && /tmp/diode --help
+```
+
 ## Status
 
-🚧 **Sprint 0 — project kickoff & research.** See [`docs/sprints/sprint-00-kickoff.md`](docs/sprints/sprint-00-kickoff.md).
+🚧 **Sprint 1 — MVP.** See [`docs/sprints/sprint-01-mvp.md`](docs/sprints/sprint-01-mvp.md).
+Sprint 0 (research + ADRs + project scaffolding) closed at commit `f69047b`.
 
 ## License
 

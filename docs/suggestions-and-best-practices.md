@@ -46,6 +46,15 @@ A living log of recommendations made during DataDiode development. Newest date a
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
 
+### LXC scripts (from S01-9/10/13)
+- **Hash-compare before replacing the binary.** `lxc-push.sh` SHA-256s the in-container file vs the freshly-built one and skips the install when they match. Avoids unnecessary `mv`s (and unnecessary inode churn) on re-runs after no-op rebuilds.
+- **Atomic install via tmp + mv.** Write the new binary to `diode.new`, then `mv` it on top of `diode`. Inside the same filesystem this is atomic, and any currently-running process keeps its mmap'd inode until exit. No "ETXTBSY" or "Text file busy" errors.
+- **`_common.sh` for shared bash state.** Defaults (BRIDGE, IPs, port, names), logging colors, and `require_root/cmd` helpers live in one sourced file. Override anything via env vars without editing scripts.
+- **Idempotent nftables via named table + flush + rebuild.** `nft -f -` with `table inet diode {}; delete table inet diode; table inet diode { ... }` always converges to the desired state, leaves other rules untouched.
+- **`check-prereqs.sh` runs WITHOUT root and prints exact install hints.** Operators want "install with: sudo dnf install lxc", not "missing dependency, good luck."
+- **Block on the receiver's "listening on" banner inside the container** (poll its stderr log file via the host-visible rootfs path). Same discipline as the Go E2E tests — no racy sleeps.
+- **`KEEP_BRIDGE=1` opt-out** on teardown. Multiple projects might share a bridge; default destroys it but it's one env var away from non-destructive.
+
 ### E2E tests (from S01-8)
 - **Spawn the real binary, not the in-process types.** Unit tests already cover the in-process Sender/Receiver path; E2E catches drift in the CLI surface, signal handling, real UDP stack, and the actual kernel buffer behavior. Both are needed.
 - **Build once in `TestMain`** to a tempdir; share the binary across all tests in the package. Per-test builds would inflate runtime several-fold.
