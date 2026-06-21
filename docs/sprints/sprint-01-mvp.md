@@ -47,8 +47,8 @@ chunk_total(2) | payload_len(4) | payload(≤1400) | sha256(32)
 | S01-3  | `internal/framing`: encode/decode + unit tests + fuzz target | M | ⚪ |
 | S01-4  | `internal/integrity`: SHA-256 wrap/verify | XS | ⚪ |
 | S01-5  | `internal/transport/udp`: `Sender` (writer) and `Receiver` (read loop) | M | ⚪ |
-| S01-6  | `cmd/diode-tx`: flags (`--dst`, `--mtu`, `--rate`, `--redundancy`), stdin→frames→UDP | M | ⚪ |
-| S01-7  | `cmd/diode-rx`: flags (`--listen`, `--out`), UDP→verify→stdout/file | M | ⚪ |
+| S01-6  | `cmd/diode --mode=tx`: flags (`--dst`, `--chunk`, `--rate`, `--redundancy`, `--in`, `--max-message`), stdin→frames→UDP | M | ✅ |
+| S01-7  | `cmd/diode --mode=rx`: flags (`--listen`, `--out`), UDP→verify→stdout/file | M | ⚪ |
 | S01-8  | E2E test on loopback (Go test that spawns both binaries) | S | ⚪ |
 | S01-9  | `scripts/lxc-setup.sh`: create bridge, launch `diode-low` and `diode-high`, push binaries, apply nft rules | M | ⚪ |
 | S01-10 | `scripts/lxc-teardown.sh`: clean removal | XS | ⚪ |

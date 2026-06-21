@@ -46,6 +46,15 @@ A living log of recommendations made during DataDiode development. Newest date a
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
 
+### CLI design (from S01-6)
+- **Single binary, `--mode=tx|rx` flag** rather than two binaries or subcommands. Distribution is one file; both LXC containers get the same artifact. Security trade-off (sender code linked into receiver binary) is marginal — attacker with code execution on the receiver can write raw UDP in a few syscalls anyway.
+- **Pre-parser for `--mode`** before handing remaining args to a mode-specific `flag.FlagSet`. The stdlib `flag` package errors on unknown flags, so a top-level FlagSet that doesn't know mode-specific flags would reject them.
+- **`--help` falls through to the mode parser** when it appears after `--mode`, so `diode --mode=tx --help` shows tx flags. Only intercept at the top level when no mode is set yet.
+- **`flag.ErrHelp` exits with code 0**, not 1. Getting help is not an error.
+- **Inject `send` as a function in the loop struct** so unit tests capture frames without binding to a real UDP socket. Real-network testing belongs in E2E (S01-8), not in unit tests.
+- **`--max-message` hard cap** so a runaway stdin can't keep the sender transmitting forever; protects an operator who pipes the wrong file in. Default 64 MiB; abort with a clear error if exceeded.
+- **Empty input still emits a single FINAL+HEARTBEAT frame** so the receiver sees end-of-stream even when nothing was sent — saves operators from "did it run or did it hang?" ambiguity.
+
 ### UDP transport design (from S01-5)
 - **Two separate types, `Sender` and `Receiver`** — not one bidirectional `Transport`. The split *is* the diode discipline: the Receiver type literally has no method that writes to the network.
 - **Reflection-based invariant test** — `TestReceiver_NoWriteMethods` enumerates the exported methods of `*Receiver` and fails if any future contributor adds a `Send`/`Write*` method. Compile-time pressure beats code-review vigilance.
