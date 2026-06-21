@@ -2,7 +2,7 @@
 
 A portable, modular, pluggable **software data diode** — a unidirectional network gateway that enforces one-way data flow from a *low-side* (source) network to a *high-side* (destination) network, with no possibility of return traffic at the application layer.
 
-> Repo: https://github.com/degreane/datadiode
+> Local repository (not pushed to a remote).
 
 ---
 

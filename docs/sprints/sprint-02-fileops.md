@@ -17,8 +17,8 @@ Original Sprint-02 plan from the S01 retro put plugins (WASM) first. A user requ
 |---|---|---|---|
 | S02-1  | `internal/fileenv` envelope + `--send-file` (tx) + `--files-to` (rx) | M | ✅ |
 | S02-2  | Update tutorial with file-transfer recipe | XS | ✅ |
-| S02-3  | Verify the live LXC demo once `lxc` is installed (carry-over from S01) | XS | ⚪ |
-| S02-4  | Push to GitHub, verify CI matrix is green (carry-over from S01) | XS | ⚪ |
+| S02-3  | Run the live two-LXC demo end-to-end (carry-over from S01; `lxc` now installed) | XS | 🟡 ready to run |
+| ~~S02-4~~ | ~~Push to GitHub~~ — **dropped:** repo is local-only by user direction; CI workflow stays in `.github/` as future-ready scaffolding | — | ❌ dropped |
 | S02-5  | Makefile: `build`, `test`, `e2e`, `demo`, `lint`, `clean`, `cross` | S | ⚪ |
 | S02-6  | ADR-0004: signing / MAC (HMAC-SHA256 with PSK as starting point) | S | ⚪ |
 | S02-7  | Plugin host design (WASM via wazero, host ABI) — design only, no code | M | ⚪ |
