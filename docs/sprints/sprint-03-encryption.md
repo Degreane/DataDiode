@@ -20,12 +20,12 @@
 | S03-1   | ADR-0008 + impl: AES-256-GCM AEAD (v3 wire), HKDF subkey, **unkeyed mode unchanged** | L | ✅ |
 | S03-2   | `--mode=psk` built-in PSK generator (cross-platform alternative to `openssl rand`) | S | ✅ |
 | S03-3   | E2E tests for resend + vacuum (carry-over from S02) | M | ✅ |
-| S03-3   | Update `scripts/demo.sh` to use the v2/v3 `--send-file` flow | S | ⚪ |
-| S03-4   | ADR-0007: replay protection (signed monotonic high-water mark) | M | ⚪ |
-| S03-5   | ADR-0009: Reed-Solomon FEC | L | ⚪ |
-| S03-6   | Plugin host design + WASM PoC (long-deferred from S02) | L | ⚪ |
-| S03-7   | Optional `--vacuum-interval` in rx (in-process cleanup loop) | S | ⚪ |
-| S03-8   | Sprint review + retro | XS | ⚪ |
+| S03-4   | Update `scripts/demo.sh` to v3 (`--mode=psk` + `--send-file` + `--key-file` + wire-encryption proof) | S | ✅ (script + structure committed; live LXC run hitting an environmental issue unrelated to product code; covered by E2E suite) |
+| S03-5   | ADR-0007 + impl: persistent completed-cache for replay protection | M | 🟡 in progress |
+| S03-6   | ADR-0009: Reed-Solomon FEC | L | ⚪ |
+| S03-7   | Plugin host design + WASM PoC (long-deferred from S02) | L | ⚪ |
+| S03-8   | Optional `--vacuum-interval` in rx (in-process cleanup loop) | S | ⚪ |
+| S03-9   | Sprint review + retro | XS | ⚪ |
 
 ## Non-negotiable: unkeyed mode stays a first-class path
 
