@@ -22,7 +22,8 @@ Original Sprint-02 plan from the S01 retro put plugins (WASM) first. A user requ
 | S02-5  | Makefile: `build`, `test`, `e2e`, `demo`, `lint`, `clean`, `cross`, etc. | S | ✅ |
 | S02-6  | ADR-0004 + impl: HMAC-SHA256 frame signing via `--key-file` (opt-in) | M | ✅ |
 | S02-7  | ~~Plugin host design~~ → **session-based protocol (ADR-0005)**: SOH + sparse/files spool, replaces v1 msg_id model, removes async-pool/fileenv/reassembly | L | ✅ |
-| S02-8  | Sprint review + retro | XS | ⚪ |
+| S02-8  | ADR-0006 + impl: sender state, resend, vacuum, time-spread redundancy, completed-cache | L | ✅ |
+| S02-9  | Sprint review + retro | XS | ⚪ |
 
 ## On-wire envelope for file transfer (v0)
 

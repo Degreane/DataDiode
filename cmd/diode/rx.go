@@ -16,14 +16,15 @@ import (
 
 // rxConfig is the parsed CLI configuration for `diode --mode=rx`.
 type rxConfig struct {
-	listen    string
-	filesTo   string // directory for completed files (default sink for --send-file flows)
-	outPath   string // when set, the assembled payload is written to this path (or "-" for stdout)
-	keyFile   string // PSK; when set, only signed frames are accepted (ADR-0004)
-	spoolDir  string // parent dir for per-session staging
-	spoolMode string // "sparse" (default) or "files"
-	maxConc   int    // max concurrent sessions (0 = unlimited)
-	bufferLen int    // UDP read buffer size
+	listen         string
+	filesTo        string // directory for completed files (default sink for --send-file flows)
+	outPath        string // when set, the assembled payload is written to this path (or "-" for stdout)
+	keyFile        string // PSK; when set, only signed frames are accepted (ADR-0004)
+	spoolDir       string // parent dir for per-session staging
+	spoolMode      string // "sparse" (default) or "files"
+	maxConc        int    // max concurrent sessions (0 = unlimited)
+	bufferLen      int    // UDP read buffer size
+	completedCache int    // recently-completed sids cache; 0 = off
 }
 
 func defaultSpoolDir() string {
@@ -60,6 +61,7 @@ flags:`)
 	fs.StringVar(&c.spoolDir, "spool", defaultSpoolDir(), "parent directory for per-session staging")
 	fs.StringVar(&c.spoolMode, "spool-mode", "sparse", "per-session layout: \"sparse\" (one data.partial + bitmap) or \"files\" (per-chunk files)")
 	fs.IntVar(&c.maxConc, "max-concurrent", 0, "max simultaneous sessions (0 = unlimited)")
+	fs.IntVar(&c.completedCache, "completed-cache", 1024, "size of recently-completed sids cache; resends of completed sessions are dropped instead of re-delivered (0 = off)")
 	fs.IntVar(&c.bufferLen, "buffer-len", udp.DefaultReadBufferLen, "UDP read buffer size in bytes (>= MaxFrameLen)")
 
 	if err := fs.Parse(args); err != nil {
@@ -102,10 +104,11 @@ func runRx(ctx context.Context, args []string) error {
 	// OnComplete callback that copies the assembled file to the
 	// configured sink; for --files-to we let the manager rename.
 	opts := session.Options{
-		SpoolDir:      cfg.spoolDir,
-		FilesTo:       cfg.filesTo,
-		SpoolMode:     session.SpoolMode(cfg.spoolMode),
-		MaxConcurrent: cfg.maxConc,
+		SpoolDir:           cfg.spoolDir,
+		FilesTo:            cfg.filesTo,
+		SpoolMode:          session.SpoolMode(cfg.spoolMode),
+		MaxConcurrent:      cfg.maxConc,
+		CompletedCacheSize: cfg.completedCache,
 	}
 	if cfg.outPath != "" {
 		opts.OnComplete = func(s *session.Session, path string) error {
@@ -155,8 +158,8 @@ func runRx(ctx context.Context, args []string) error {
 	runErr := recv.Run(ctx, handle)
 	s := mgr.Stats()
 	fmt.Fprintf(os.Stderr,
-		"diode rx: stopped. soh_seen=%d soh_accepted=%d soh_rejected=%d data_frames=%d data_dropped=%d data_dup=%d completed=%d hash_mismatch=%d active=%d\n",
-		s.SOHsSeen, s.SOHsAccepted, s.SOHsRejected,
+		"diode rx: stopped. soh_seen=%d soh_accepted=%d soh_rejected=%d soh_for_completed=%d data_frames=%d data_dropped=%d data_dup=%d completed=%d hash_mismatch=%d active=%d\n",
+		s.SOHsSeen, s.SOHsAccepted, s.SOHsRejected, s.SOHsForCompleted,
 		s.DataFrames, s.DataDropped, s.DataDup,
 		s.Completed, s.HashMismatch, s.Active)
 	if runErr == nil || errors.Is(runErr, context.Canceled) {

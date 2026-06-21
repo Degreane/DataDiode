@@ -46,6 +46,16 @@ A living log of recommendations made during DataDiode development. Newest date a
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
 
+### Sender state + resend + vacuum (from S02-8, ADR-0006)
+- **Sender owns the session_id.** Receiver consumes whatever sid arrives — it has no opinion. This made the resend feature compose with the existing receiver semantics (bitmap dedup + SOH idempotency) with **zero protocol changes**.
+- **Resend always pulls from the archive snapshot, not the live file.** Operators edit files; the snapshot is the only stable representation of "what the receiver was promised." Re-hashing the snapshot before resend catches accidental drift loudly.
+- **Receiver's completed-cache is the right place to detect a finished resend.** A FIFO of recently-completed sids; the cache is in-memory only — receiver restart looks like "I never saw this sid" which is the safest default. Persisting it across restart is a future enhancement.
+- **JSON Lines for the manifest** — append-only, line-tailable (`tail -f manifest.jsonl | jq .`), trivially streamable into any log pipeline. No schema migrations needed; forward-only field additions.
+- **Vacuum as a separate `--mode`, cron-friendly.** Not a daemon, not threads in rx; just `--mode=vacuum --age=N --spool=... --sender-state=...`. Composes with whatever scheduler the operator already has.
+- **Vacuum uses newest-mtime of session dir**, not first-mtime. A session that just received a chunk has a fresh `chunks.bitmap`, so vacuum never races with an in-flight transfer.
+- **Time-spread redundancy is the default (`--redundancy-order=spread`).** Same total bytes, dramatically better burst-loss survival because N copies of a chunk are now spread across N passes instead of consecutive packets.
+- **Interleaved SOH (`--soh-interval=256`) protects against the single biggest reliability foot-gun**: an early burst wiping all SOH copies and silently turning every subsequent DATA frame into an orphan drop. Re-emitting the SOH every 256 chunks costs <1% overhead.
+
 ### Session protocol design (from S02-7, ADR-0005)
 - **SOH preamble is the right primitive.** Sender pre-computes sha256 + total + chunk plan; receiver provisions storage upfront. This is the canonical reliable-transport pattern (BitTorrent, Aspera, NORM, Zmodem) — once we tried to live without it (v1 msg_id model) we paid in concurrent-sender collisions, in-memory buffering, and back-pressure pathology that motivated the dead-end async-pool work.
 - **UUID v4 session_id** instead of `uint32 msg_id` — collision probability across any number of senders is essentially zero. Two `crypto/rand` reads + two bit tweaks per session.

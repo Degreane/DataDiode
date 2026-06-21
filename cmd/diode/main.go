@@ -35,12 +35,14 @@ const (
 	usage = `diode — software unidirectional gateway
 
 usage:
-  diode --mode=tx [flags]   one-way sender   (stdin → frames → UDP)
-  diode --mode=rx [flags]   one-way receiver (UDP → verify → stdout/file)
-  diode --version           print version and exit
-  diode --help              show this help
+  diode --mode=tx       [flags]   one-way sender   (file → SOH+chunks → UDP)
+  diode --mode=rx       [flags]   one-way receiver (UDP → verify → file)
+  diode --mode=manifest [flags]   print the sender's transfer history
+  diode --mode=vacuum   [flags]   prune old spool / sent / manifest entries
+  diode --version                 print version and exit
+  diode --help                    show this help
 
-Run "diode --mode=tx --help" or "diode --mode=rx --help" for mode-specific flags.
+Run "diode --mode=<mode> --help" for mode-specific flags.
 `
 )
 
@@ -69,6 +71,22 @@ func main() {
 				return
 			}
 			fmt.Fprintf(os.Stderr, "diode --mode=rx: %v\n", err)
+			os.Exit(1)
+		}
+	case "manifest":
+		if err := runManifest(ctx, rest); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "diode --mode=manifest: %v\n", err)
+			os.Exit(1)
+		}
+	case "vacuum":
+		if err := runVacuum(ctx, rest); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "diode --mode=vacuum: %v\n", err)
 			os.Exit(1)
 		}
 	case "version":
@@ -122,10 +140,13 @@ func extractMode(args []string) (mode string, rest []string, err error) {
 		}
 	}
 	if !seen {
-		return "", nil, fmt.Errorf("--mode is required (tx|rx)")
+		return "", nil, fmt.Errorf("--mode is required (tx|rx|manifest|vacuum)")
 	}
-	if mode != "tx" && mode != "rx" {
-		return "", nil, fmt.Errorf("--mode must be tx or rx, got %q", mode)
+	switch mode {
+	case "tx", "rx", "manifest", "vacuum":
+		// ok
+	default:
+		return "", nil, fmt.Errorf("--mode must be tx, rx, manifest, or vacuum; got %q", mode)
 	}
 	return mode, rest, nil
 }

@@ -54,28 +54,40 @@ type Options struct {
 	// 0 = unlimited.
 	MaxConcurrent int
 
+	// CompletedCacheSize is the size of the recently-completed-sids
+	// FIFO. When > 0, SOH for a sid in the cache is silently accepted
+	// without re-provisioning a spool dir; DATA for such a sid is
+	// dropped. Default 1024; 0 disables.
+	CompletedCacheSize int
+
 	// Now is overridable for tests.
 	Now func() time.Time
 }
 
 // Stats is a snapshot of receiver-side counters.
 type Stats struct {
-	SOHsSeen     uint64
-	SOHsAccepted uint64
-	SOHsRejected uint64 // unknown reason — duplicate, max-concurrent hit, etc.
-	DataFrames   uint64
-	DataDropped  uint64 // unknown session_id (no SOH yet or never received)
-	DataDup      uint64 // chunk we already had (bit set)
-	Completed    uint64
-	HashMismatch uint64 // completion sha256 didn't match SOH's claim
-	Active       int
+	SOHsSeen         uint64
+	SOHsAccepted     uint64
+	SOHsRejected     uint64 // duplicate, max-concurrent hit, etc.
+	SOHsForCompleted uint64 // sid was in completed-cache; resend-of-completed
+	DataFrames       uint64
+	DataDropped      uint64 // unknown session_id (no SOH yet or never received)
+	DataDup          uint64 // chunk we already had (bit set)
+	Completed        uint64
+	HashMismatch     uint64 // completion sha256 didn't match SOH's claim
+	Active           int
 }
 
 // Manager routes incoming frames to per-session state.
 type Manager struct {
 	opts     Options
 	sessions map[framing.SessionID]*Session
-	stats    Stats
+
+	// Recently-completed sids; FIFO ring of opts.CompletedCacheSize.
+	completed      map[framing.SessionID]struct{}
+	completedOrder []framing.SessionID
+
+	stats Stats
 }
 
 // Session is one in-flight transfer.
@@ -133,10 +145,15 @@ func New(opts Options) (*Manager, error) {
 			return nil, fmt.Errorf("session: mkdir files-to: %w", err)
 		}
 	}
-	return &Manager{
+	m := &Manager{
 		opts:     opts,
 		sessions: make(map[framing.SessionID]*Session),
-	}, nil
+	}
+	if opts.CompletedCacheSize > 0 {
+		m.completed = make(map[framing.SessionID]struct{}, opts.CompletedCacheSize)
+		m.completedOrder = make([]framing.SessionID, 0, opts.CompletedCacheSize)
+	}
+	return m, nil
 }
 
 // IngestSOH provisions a new session from an SOH frame. Idempotent on
@@ -148,6 +165,13 @@ func (m *Manager) IngestSOH(soh framing.SOH) error {
 	if _, ok := m.sessions[soh.SessionID]; ok {
 		// Duplicate SOH (typical when --soh-redundancy>1). Quietly accept.
 		return nil
+	}
+	if m.completed != nil {
+		if _, seen := m.completed[soh.SessionID]; seen {
+			// Resend of a session we already finished. Don't re-provision.
+			m.stats.SOHsForCompleted++
+			return nil
+		}
 	}
 	if m.opts.MaxConcurrent > 0 && len(m.sessions) >= m.opts.MaxConcurrent {
 		m.stats.SOHsRejected++
@@ -225,6 +249,9 @@ func (m *Manager) IngestDATA(d framing.DATA, payload []byte) error {
 
 	s, ok := m.sessions[d.SessionID]
 	if !ok {
+		// Either we never saw this sid, or we already completed it.
+		// Either way the DATA frame goes in the bin; both bump the
+		// same counter so the operator just sees "data_dropped".
 		m.stats.DataDropped++
 		return nil
 	}
@@ -351,7 +378,30 @@ func (m *Manager) finalize(s *Session) error {
 	}
 	m.stats.Completed++
 	m.stats.Active = len(m.sessions)
+
+	// Record the sid as recently-completed so a resend (--resend=<sid>
+	// from the operator) is recognised as a no-op instead of being
+	// re-received from scratch.
+	m.markCompleted(s.SID)
 	return nil
+}
+
+// markCompleted adds sid to the completed-cache, evicting the oldest
+// when full. No-op if cache is disabled.
+func (m *Manager) markCompleted(sid framing.SessionID) {
+	if m.completed == nil {
+		return
+	}
+	if _, ok := m.completed[sid]; ok {
+		return
+	}
+	m.completed[sid] = struct{}{}
+	m.completedOrder = append(m.completedOrder, sid)
+	for len(m.completedOrder) > m.opts.CompletedCacheSize {
+		evict := m.completedOrder[0]
+		m.completedOrder = m.completedOrder[1:]
+		delete(m.completed, evict)
+	}
 }
 
 // Stats returns a snapshot of counters.

@@ -357,5 +357,89 @@ func TestSparseAndFilesProduceIdenticalOutput(t *testing.T) {
 	}
 }
 
+// ---- completed-cache --------------------------------------------------
+
+func TestCompletedCache_ResendAfterCompletionDropped(t *testing.T) {
+	spool := filepath.Join(t.TempDir(), "spool")
+	out := filepath.Join(t.TempDir(), "out")
+	m, err := New(Options{
+		SpoolDir: spool, FilesTo: out, SpoolMode: SpoolModeSparse,
+		CompletedCacheSize: 16,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	payload := []byte("complete me")
+	soh, datas, payloads := plan(t, sid(30), "done.txt", 0o644, payload, 100)
+
+	// Original send completes.
+	_ = m.IngestSOH(soh)
+	if err := m.IngestDATA(datas[0], payloads[0]); err != nil {
+		t.Fatalf("IngestDATA: %v", err)
+	}
+	if m.Stats().Completed != 1 {
+		t.Fatalf("expected 1 completion")
+	}
+
+	// "Resend" same sid + same chunk: SOH should be marked-completed
+	// drop; DATA should be data_dropped (no session in map).
+	_ = m.IngestSOH(soh)
+	_ = m.IngestDATA(datas[0], payloads[0])
+
+	if got := m.Stats().SOHsForCompleted; got != 1 {
+		t.Fatalf("SOHsForCompleted: got %d want 1", got)
+	}
+	if got := m.Stats().DataDropped; got != 1 {
+		t.Fatalf("DataDropped: got %d want 1", got)
+	}
+	// No second completion.
+	if m.Stats().Completed != 1 {
+		t.Fatalf("Completed should remain 1; got %d", m.Stats().Completed)
+	}
+}
+
+func TestCompletedCache_DisabledByDefault(t *testing.T) {
+	spool := filepath.Join(t.TempDir(), "spool")
+	out := filepath.Join(t.TempDir(), "out")
+	m, _ := New(Options{SpoolDir: spool, FilesTo: out, SpoolMode: SpoolModeSparse})
+	payload := []byte("repeatable")
+	soh, datas, payloads := plan(t, sid(31), "repeat.txt", 0o644, payload, 100)
+
+	_ = m.IngestSOH(soh)
+	_ = m.IngestDATA(datas[0], payloads[0])
+	_ = m.IngestSOH(soh)
+	_ = m.IngestDATA(datas[0], payloads[0])
+
+	if m.Stats().Completed != 2 {
+		t.Fatalf("with cache disabled, second send should re-deliver; got Completed=%d", m.Stats().Completed)
+	}
+	if m.Stats().SOHsForCompleted != 0 {
+		t.Fatalf("SOHsForCompleted should be 0 when cache disabled")
+	}
+}
+
+func TestCompletedCache_RingEviction(t *testing.T) {
+	spool := filepath.Join(t.TempDir(), "spool")
+	out := filepath.Join(t.TempDir(), "out")
+	m, _ := New(Options{
+		SpoolDir: spool, FilesTo: out, SpoolMode: SpoolModeSparse,
+		CompletedCacheSize: 2,
+	})
+	// Complete 3 sessions; cache holds last 2.
+	for b := byte(40); b < 43; b++ {
+		soh, datas, payloads := plan(t, sid(b), fmt.Sprintf("f%d.txt", b), 0o644, []byte("x"), 100)
+		_ = m.IngestSOH(soh)
+		_ = m.IngestDATA(datas[0], payloads[0])
+	}
+	// Resend the oldest (sid 40) — should have been evicted from cache
+	// → treated as fresh, gets re-delivered.
+	soh40, datas40, payloads40 := plan(t, sid(40), "f40.txt", 0o644, []byte("x"), 100)
+	_ = m.IngestSOH(soh40)
+	_ = m.IngestDATA(datas40[0], payloads40[0])
+	if m.Stats().Completed != 4 {
+		t.Fatalf("evicted sid should re-deliver; Completed=%d want 4", m.Stats().Completed)
+	}
+}
+
 // Marker so the unused "time" import stays during incremental development.
 var _ = time.Time{}
