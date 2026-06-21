@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/degreane/datadiode/internal/manifest"
+	"github.com/degreane/datadiode/internal/session"
 )
 
 func runVacuum(_ context.Context, args []string) error {
@@ -50,6 +51,23 @@ flags:`)
 		}
 		totalRemoved += n
 		fmt.Fprintf(os.Stderr, "diode vacuum: spool removed %d session dirs\n", n)
+
+		// ADR-0007: prune the disk-backed completed-cache the same way
+		// we prune the manifest — drop entries with completed_at < cutoff.
+		completedIdx := filepath.Join(*spool, "completed.idx")
+		if _, err := os.Stat(completedIdx); err == nil {
+			if *dryRun {
+				fmt.Fprintf(os.Stderr, "diode vacuum: would prune %s (dry-run)\n", completedIdx)
+			} else {
+				dropped, err := session.PruneCompletedIdx(completedIdx, cutoff)
+				if err != nil {
+					return fmt.Errorf("prune completed.idx: %w", err)
+				}
+				if dropped > 0 {
+					fmt.Fprintf(os.Stderr, "diode vacuum: completed.idx dropped %d sids\n", dropped)
+				}
+			}
+		}
 	}
 	if *state != "" {
 		n, err := vacuumSenderState(*state, cutoff, *dryRun, *verbose)

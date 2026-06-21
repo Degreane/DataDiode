@@ -198,10 +198,11 @@ If a sender's `--chunk` is set higher than the path MTU, IP fragmentation kicks 
 
 ### 6.3 Replay attack
 
-An attacker captures a legitimate datagram and replays it later.
-- *Today:* The receiver's recently-delivered MsgID cache (default 1024) catches near-term replays. Replays older than 1024 distinct messages re-deliver as if fresh.
-- *Mitigation seam:* `seq` and `msg_id` are monotonic per sender boot. A future signed/MAC'd frame would include them in the signed scope, making out-of-order or replayed frames detectable.
-- *Deferred to:* ADR-0004 (signing) — once frames are MAC'd, the receiver can keep a high-water-mark `seq` and reject anything older.
+An attacker captures a legitimate session's frames and replays them later.
+- **Within the active in-memory cache window** (default 1024 sids since rx process start): caught by the recently-completed cache (ADR-0006).
+- **After receiver restart** (ADR-0007): caught by the disk-backed cache at `<spool>/completed.idx`. The cache is hydrated at startup (capacity `--completed-cache-disk-cap`, default 100 K entries); operator prunes via `--mode=vacuum --age=N --spool=…`.
+- **Across multi-week windows beyond the disk cache**: replays would succeed in principle. Operators with stricter requirements should rotate the PSK on a schedule (a new PSK derives a different AEAD subkey, so old ciphertext cannot be replayed under the new key).
+- *Wire-format change considered for v4* (signed monotonic high-water-mark) would close the remaining window but is deferred — the disk-backed cache covers practical attacks without changing the wire.
 
 ### 6.4 Endianness / parser ambiguity
 

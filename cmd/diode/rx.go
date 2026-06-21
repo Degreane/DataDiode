@@ -16,15 +16,17 @@ import (
 
 // rxConfig is the parsed CLI configuration for `diode --mode=rx`.
 type rxConfig struct {
-	listen         string
-	filesTo        string // directory for completed files (default sink for --send-file flows)
-	outPath        string // when set, the assembled payload is written to this path (or "-" for stdout)
-	keyFile        string // PSK; when set, only signed frames are accepted (ADR-0004)
-	spoolDir       string // parent dir for per-session staging
-	spoolMode      string // "sparse" (default) or "files"
-	maxConc        int    // max concurrent sessions (0 = unlimited)
-	bufferLen      int    // UDP read buffer size
-	completedCache int    // recently-completed sids cache; 0 = off
+	listen                string
+	filesTo               string // directory for completed files (default sink for --send-file flows)
+	outPath               string // when set, the assembled payload is written to this path (or "-" for stdout)
+	keyFile               string // PSK; when set, only signed frames are accepted (ADR-0004)
+	spoolDir              string // parent dir for per-session staging
+	spoolMode             string // "sparse" (default) or "files"
+	maxConc               int    // max concurrent sessions (0 = unlimited)
+	bufferLen             int    // UDP read buffer size
+	completedCache        int    // recently-completed sids cache; 0 = off
+	completedCacheDisk    bool   // persist completed sids to <spool>/completed.idx
+	completedCacheDiskCap int    // cap on entries loaded from disk at startup
 }
 
 func defaultSpoolDir() string {
@@ -62,6 +64,8 @@ flags:`)
 	fs.StringVar(&c.spoolMode, "spool-mode", "sparse", "per-session layout: \"sparse\" (one data.partial + bitmap) or \"files\" (per-chunk files)")
 	fs.IntVar(&c.maxConc, "max-concurrent", 0, "max simultaneous sessions (0 = unlimited)")
 	fs.IntVar(&c.completedCache, "completed-cache", 1024, "size of recently-completed sids cache; resends of completed sessions are dropped instead of re-delivered (0 = off)")
+	fs.BoolVar(&c.completedCacheDisk, "completed-cache-disk", true, "persist completed sids to <spool>/completed.idx so the cache survives receiver restart (ADR-0007)")
+	fs.IntVar(&c.completedCacheDiskCap, "completed-cache-disk-cap", 100000, "max records loaded from <spool>/completed.idx at startup; older entries stay on disk for --mode=vacuum to prune")
 	fs.IntVar(&c.bufferLen, "buffer-len", udp.DefaultReadBufferLen, "UDP read buffer size in bytes (>= MaxFrameLen)")
 
 	if err := fs.Parse(args); err != nil {
@@ -104,11 +108,13 @@ func runRx(ctx context.Context, args []string) error {
 	// OnComplete callback that copies the assembled file to the
 	// configured sink; for --files-to we let the manager rename.
 	opts := session.Options{
-		SpoolDir:           cfg.spoolDir,
-		FilesTo:            cfg.filesTo,
-		SpoolMode:          session.SpoolMode(cfg.spoolMode),
-		MaxConcurrent:      cfg.maxConc,
-		CompletedCacheSize: cfg.completedCache,
+		SpoolDir:                 cfg.spoolDir,
+		FilesTo:                  cfg.filesTo,
+		SpoolMode:                session.SpoolMode(cfg.spoolMode),
+		MaxConcurrent:            cfg.maxConc,
+		CompletedCacheSize:       cfg.completedCache,
+		PersistentCompletedCache: cfg.completedCacheDisk,
+		CompletedCacheDiskCap:    cfg.completedCacheDiskCap,
 	}
 	if cfg.outPath != "" {
 		opts.OnComplete = func(s *session.Session, path string) error {

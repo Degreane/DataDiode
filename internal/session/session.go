@@ -60,6 +60,17 @@ type Options struct {
 	// dropped. Default 1024; 0 disables.
 	CompletedCacheSize int
 
+	// PersistentCompletedCache enables ADR-0007: each finalize appends
+	// (sid, completed_at) to <SpoolDir>/completed.idx, and the
+	// in-memory cache is hydrated from that file at startup. Default
+	// true when SpoolDir is set. Set false to disable persistence.
+	PersistentCompletedCache bool
+
+	// CompletedCacheDiskCap caps how many lines are loaded from
+	// completed.idx into the in-memory cache at startup. Newer
+	// entries (file tail) win. Default 100000.
+	CompletedCacheDiskCap int
+
 	// Now is overridable for tests.
 	Now func() time.Time
 }
@@ -152,6 +163,21 @@ func New(opts Options) (*Manager, error) {
 	if opts.CompletedCacheSize > 0 {
 		m.completed = make(map[framing.SessionID]struct{}, opts.CompletedCacheSize)
 		m.completedOrder = make([]framing.SessionID, 0, opts.CompletedCacheSize)
+	}
+	if opts.PersistentCompletedCache {
+		cap := opts.CompletedCacheDiskCap
+		if cap <= 0 {
+			cap = 100_000
+		}
+		loaded, err := loadCompletedIdx(filepath.Join(opts.SpoolDir, "completed.idx"), cap)
+		if err != nil {
+			return nil, fmt.Errorf("session: load completed.idx: %w", err)
+		}
+		// Hydrate in-memory cache from disk. Newer entries (file tail)
+		// win because the FIFO ring evicts the oldest on overflow.
+		for _, sid := range loaded {
+			m.markCompletedMem(sid)
+		}
 	}
 	return m, nil
 }
@@ -387,13 +413,31 @@ func (m *Manager) finalize(s *Session) error {
 }
 
 // markCompleted adds sid to the completed-cache, evicting the oldest
-// when full. No-op if cache is disabled.
+// when full, and (when persistence is enabled) appends a record to
+// <SpoolDir>/completed.idx so the cache survives receiver restart.
+// No-op if the in-memory cache is disabled.
 func (m *Manager) markCompleted(sid framing.SessionID) {
-	if m.completed == nil {
+	added := m.markCompletedMem(sid)
+	if !added || !m.opts.PersistentCompletedCache {
 		return
 	}
+	// Fire-and-forget disk append: a failure here doesn't undo the
+	// completion (file is already delivered); we just lose the
+	// across-restart benefit for this one sid.
+	if err := appendCompletedIdx(filepath.Join(m.opts.SpoolDir, "completed.idx"),
+		sid, m.opts.Now().UTC()); err != nil {
+		fmt.Fprintf(os.Stderr, "session: warning: append completed.idx: %v\n", err)
+	}
+}
+
+// markCompletedMem updates the in-memory cache only. Returns true if
+// sid was newly added (false if already present).
+func (m *Manager) markCompletedMem(sid framing.SessionID) bool {
+	if m.completed == nil {
+		return false
+	}
 	if _, ok := m.completed[sid]; ok {
-		return
+		return false
 	}
 	m.completed[sid] = struct{}{}
 	m.completedOrder = append(m.completedOrder, sid)
@@ -402,6 +446,7 @@ func (m *Manager) markCompleted(sid framing.SessionID) {
 		m.completedOrder = m.completedOrder[1:]
 		delete(m.completed, evict)
 	}
+	return true
 }
 
 // Stats returns a snapshot of counters.

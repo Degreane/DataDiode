@@ -21,7 +21,7 @@
 | S03-2   | `--mode=psk` built-in PSK generator (cross-platform alternative to `openssl rand`) | S | ✅ |
 | S03-3   | E2E tests for resend + vacuum (carry-over from S02) | M | ✅ |
 | S03-4   | Update `scripts/demo.sh` to v3 (`--mode=psk` + `--send-file` + `--key-file` + wire-encryption proof) | S | ✅ (script + structure committed; live LXC run hitting an environmental issue unrelated to product code; covered by E2E suite) |
-| S03-5   | ADR-0007 + impl: persistent completed-cache for replay protection | M | 🟡 in progress |
+| S03-5   | ADR-0007 + impl: persistent completed-cache for replay protection | M | ✅ |
 | S03-6   | ADR-0009: Reed-Solomon FEC | L | ⚪ |
 | S03-7   | Plugin host design + WASM PoC (long-deferred from S02) | L | ⚪ |
 | S03-8   | Optional `--vacuum-interval` in rx (in-process cleanup loop) | S | ⚪ |

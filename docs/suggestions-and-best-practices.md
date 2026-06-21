@@ -46,6 +46,14 @@ A living log of recommendations made during DataDiode development. Newest date a
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
 
+### Persistent completed-cache (from S03-5, ADR-0007)
+- **Disk-backed replay protection without a wire change.** The cache hydrates from `<spool>/completed.idx` at receiver startup, so replays that capture a completed session and replay-after-restart are caught by the same code path that catches mid-run replays. No version bump, no operator action beyond running with `--completed-cache-disk=true` (default).
+- **Append-then-fsync per finalize.** One small write + one fsync per completed session — negligible vs the disk write that just delivered the file. The session is already on disk; durability of the cache entry is symmetric with durability of the file.
+- **Ring buffer with `--completed-cache-disk-cap`** (default 100 K) bounds RAM at startup. Disk file is unbounded; **vacuum** is the bounded-disk mechanism. The pruner is in-place with atomic temp+rename, same pattern as the manifest pruner.
+- **Tolerate corrupt lines** in completed.idx. A partial write or filesystem corruption shouldn't take down the rx; parser skips bad lines and counts them as pruned during the next vacuum.
+- **Default ON when SpoolDir is set.** Operators get replay protection by default; they have to actively opt out with `--completed-cache-disk=false` to revert to the RAM-only behavior. Right side of the safe-default trade-off.
+- **One operator gotcha worth surfacing**: `rm -rf <spool>` now also resets the replay-protection set. Document loudly; recommend keeping the spool dir as durable state, not a scratch space.
+
 ### AEAD encryption (from S03-1, ADR-0008)
 - **AEAD ≠ HMAC + encryption layered**. AES-256-GCM is a single primitive that provides confidentiality + integrity + authentication. Composing HMAC on top is duplicate work and wire bytes; composing encryption underneath HMAC needs a separate MAC key. Just use AEAD.
 - **HKDF the PSK before use.** Never use the raw `--key-file` bytes as the AEAD key — derive a domain-separated subkey (`HKDF-SHA256(salt="diode-aead-v3-salt", ikm=psk, info="diode-aead-v3 chunk-aead")`). Lets the same PSK be safely reused for future subkeys (signed manifests, replay nonces).
