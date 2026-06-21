@@ -342,7 +342,7 @@ func TestE2E_BadFlags(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected non-zero exit for --mode=nope")
 	}
-	if !strings.Contains(stderr.String(), "tx or rx") {
+	if !strings.Contains(stderr.String(), "tx, rx, manifest, or vacuum") {
 		t.Fatalf("stderr should mention valid modes; got: %s", stderr.String())
 	}
 }

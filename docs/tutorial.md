@@ -481,7 +481,107 @@ diode --mode=tx --dst=10.99.0.20:9999 --send-file=report.pdf --key-file=/etc/dio
 
 **Backward compatibility:** if `--key-file` is omitted on either side, behavior is identical to today. Existing deployments don't need to change.
 
-### 8d. Raw byte stream (without filename)
+### 8d. Resend a failed transfer
+
+If a transfer was interrupted (network blip, receiver crash, etc.) the
+receiver's spool dir for that session is still on disk with whichever
+chunks made it. You can complete the transfer by replaying the **same
+session id** — the receiver dedupes via its bitmap and only writes the
+missing chunks.
+
+**What was sent** (from the manifest):
+
+```bash
+diode --mode=manifest
+```
+
+```
+COMPLETED_AT (UTC)    SESSION_ID                            FILENAME       BYTES  DEST
+----------------------------------------------------------------------------------------
+2026-06-21T20:15:23Z  3f29b1a2-c8e4-4f1d-9b6a-aeb5e7c84021  report.pdf   1048576  10.0.0.20:9999
+2026-06-21T20:11:07Z  8c1d472f-1ba9-4e2c-9c1f-3b8a2d9f7e10  data.bin       50000  10.0.0.20:9999
+```
+
+**Resend by session id** (uses the archived snapshot, not the live file):
+
+```bash
+diode --mode=tx --dst=10.0.0.20:9999 --resend=3f29b1a2-c8e4-4f1d-9b6a-aeb5e7c84021
+```
+
+**Resend the most recent send of a given file by name**:
+
+```bash
+diode --mode=tx --dst=10.0.0.20:9999 --resend-latest=report.pdf
+```
+
+**Filter the manifest** by recency or by sid:
+
+```bash
+diode --mode=manifest --since=24h                    # Go duration, plus 'd' / 'w' shortcuts
+diode --mode=manifest --since=7d --format=tsv        # tab-separated for piping
+diode --mode=manifest --session-id=3f29b1a2-...      # just one session's history
+diode --mode=manifest --format=json | jq '.filename' # structured
+```
+
+**Defaults and where things live:**
+
+| Default path | Override flag |
+|---|---|
+| `~/.diode/sent/<UTC>__<basename>` (Linux/macOS) | `--sender-state=<dir>` |
+| `%APPDATA%\diode\sent\<UTC>__<basename>` (Windows) | same |
+| `<state>/manifest.jsonl` | (derived from above) |
+
+**Receiver-side recognition of resends:**
+
+The receiver tracks the last `--completed-cache=N` session ids (default
+1024). A resend that arrives *after* the original already completed is
+silently dropped and counted as `soh_for_completed=N` in the stats
+line — no second delivery to `--files-to`. Set `--completed-cache=0`
+to revert to always-re-deliver behavior.
+
+### 8e. Vacuum old state
+
+Both the receiver spool and the sender's `sent/` archive grow without
+bound. The bundled cleanup is **cron-friendly**:
+
+```bash
+# remove sender archive files older than 7 days, prune matching manifest entries
+diode --mode=vacuum --age=10080 --sender-state=~/.diode
+
+# remove abandoned receiver spool sessions older than 1 day
+sudo diode --mode=vacuum --age=1440 --spool=/var/spool/diode
+
+# show what would be removed, take no action
+diode --mode=vacuum --age=10080 --sender-state=~/.diode --dry-run --verbose
+```
+
+`--age` is in minutes. A receiver spool session is **only** vacuumed if
+its newest file (typically `chunks.bitmap`, refreshed on every chunk)
+is older than the threshold — so vacuum never races with an in-flight
+transfer.
+
+### 8f. Burst-loss tolerance: time-spread redundancy + interleaved SOH
+
+The defaults (no flags needed) already protect against the two
+realistic loss modes:
+
+- **`--redundancy-order=spread`** (default) — when `--redundancy=N`, the
+  sender ships **N round-robin passes** of every chunk instead of N
+  consecutive copies. Same total bytes; a network burst that drops K
+  consecutive datagrams now costs 1 copy each of K different chunks
+  instead of all copies of (K/N) chunks.
+- **`--soh-interval=256`** (default) — the SOH preamble is also
+  re-emitted every 256 data frames. Without this, a tiny early-burst
+  could wipe all `--soh-redundancy` copies of the SOH and the receiver
+  would silently drop every DATA frame for the rest of the transfer.
+
+On a clean wire (LAN, loopback, point-to-point fiber) you don't need
+either — defaults are tuned for "works fine, costs almost nothing."
+Bump `--redundancy=2` or `--redundancy=3` on a lossy WAN and the
+spread layout will survive bursts that the consecutive layout would
+turn into a re-transfer.
+
+### 8g. Raw byte stream (without filename)
 
 When you just want bytes through (the diode doesn't care what they are):
 
