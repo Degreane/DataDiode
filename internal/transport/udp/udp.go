@@ -27,10 +27,19 @@ import (
 	"github.com/degreane/datadiode/internal/framing"
 )
 
-// DefaultReadBufferLen is the size of the buffer allocated per Recv call
-// or per Run loop iteration. It must be at least framing.MaxFrameLen;
-// anything smaller would silently truncate datagrams.
+// DefaultReadBufferLen is the size of the userspace buffer allocated
+// per Recv call or per Run loop iteration. It must be at least
+// framing.MaxFrameLen; anything smaller would silently truncate
+// datagrams.
 const DefaultReadBufferLen = framing.MaxFrameLen
+
+// DefaultSocketRcvBufBytes is the default SO_RCVBUF size we ask the
+// kernel to set on the receiver socket. At full-MTU frames this holds
+// about 3000 in-flight datagrams — enough for ~30 ms of 1 Gbps wire
+// at the userspace decode rate we measured (~4 GB/s framing.Decode).
+// The kernel may cap this at net.core.rmem_max (Linux); the result is
+// observed via SetReadBuffer and silently truncated, not an error.
+const DefaultSocketRcvBufBytes = 4 << 20 // 4 MiB
 
 // ---------- Sender ----------------------------------------------------------
 
@@ -119,13 +128,21 @@ func (s *Sender) LocalAddr() net.Addr { return s.conn.LocalAddr() }
 type ReceiverOption func(*receiverOpts)
 
 type receiverOpts struct {
-	bufferLen int
+	bufferLen     int
+	socketRcvBuf  int
 }
 
 // WithBufferLen sets the read buffer size in bytes. Must be at least
 // framing.MaxFrameLen or the constructor returns an error.
 func WithBufferLen(n int) ReceiverOption {
 	return func(o *receiverOpts) { o.bufferLen = n }
+}
+
+// WithSocketRcvBufBytes sets SO_RCVBUF on the underlying UDP socket.
+// A value <= 0 leaves the kernel default in place. The kernel may
+// silently cap this at net.core.rmem_max.
+func WithSocketRcvBufBytes(n int) ReceiverOption {
+	return func(o *receiverOpts) { o.socketRcvBuf = n }
 }
 
 // Receiver is the read side of the diode transport. It exposes no
@@ -147,13 +164,25 @@ func Listen(addr string, opts ...ReceiverOption) (*Receiver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("udp: listen %q: %w", addr, err)
 	}
-	r := &Receiver{conn: conn, opts: receiverOpts{bufferLen: DefaultReadBufferLen}}
+	r := &Receiver{
+		conn: conn,
+		opts: receiverOpts{
+			bufferLen:    DefaultReadBufferLen,
+			socketRcvBuf: DefaultSocketRcvBufBytes,
+		},
+	}
 	for _, o := range opts {
 		o(&r.opts)
 	}
 	if r.opts.bufferLen < framing.MaxFrameLen {
 		_ = conn.Close()
 		return nil, fmt.Errorf("udp: buffer length %d < framing.MaxFrameLen %d", r.opts.bufferLen, framing.MaxFrameLen)
+	}
+	if r.opts.socketRcvBuf > 0 {
+		// Best-effort: ignore error so a sandbox without CAP_NET_ADMIN
+		// or with a low net.core.rmem_max still gets a working receiver.
+		// Operators who care can verify via `ss -ul`.
+		_ = conn.SetReadBuffer(r.opts.socketRcvBuf)
 	}
 	return r, nil
 }

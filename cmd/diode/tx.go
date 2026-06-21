@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
+	"github.com/degreane/datadiode/internal/fileenv"
 	"github.com/degreane/datadiode/internal/framing"
 	"github.com/degreane/datadiode/internal/transport/udp"
 )
@@ -20,6 +22,7 @@ type txConfig struct {
 	rateBPS     int64
 	redundancy  int
 	inputPath   string // "-" for stdin
+	sendFile    string // path to a file to wrap in a fileenv envelope; mutually exclusive with inputPath
 	maxMessage  int64  // hard cap to keep us well under MsgID/ChunkTotal ceilings
 	heartbeatHz int
 }
@@ -43,7 +46,8 @@ flags:`)
 	fs.IntVar(&c.chunkBytes, "chunk", framing.MaxPayloadLen, "payload bytes per frame (1..MaxPayloadLen)")
 	fs.Int64Var(&c.rateBPS, "rate", 0, "wire rate cap in bytes/sec (0 = unlimited)")
 	fs.IntVar(&c.redundancy, "redundancy", 1, "send each frame N times (>=1)")
-	fs.StringVar(&c.inputPath, "in", "-", "input file path (\"-\" = stdin)")
+	fs.StringVar(&c.inputPath, "in", "-", "input file path (\"-\" = stdin); raw bytes, no envelope")
+	fs.StringVar(&c.sendFile, "send-file", "", "path to a file to send as a named file (wraps in DDF envelope); mutually exclusive with --in")
 	fs.Int64Var(&c.maxMessage, "max-message", 64<<20, "abort if a single message exceeds N bytes (default 64 MiB)")
 	fs.IntVar(&c.heartbeatHz, "heartbeat-hz", 0, "send N heartbeat frames per second when idle (0 = off)")
 
@@ -60,6 +64,9 @@ flags:`)
 	if c.redundancy < 1 {
 		return c, errors.New("--redundancy must be >= 1")
 	}
+	if c.sendFile != "" && c.inputPath != "-" {
+		return c, errors.New("--send-file and --in are mutually exclusive")
+	}
 	return c, nil
 }
 
@@ -71,12 +78,6 @@ func runTx(ctx context.Context, args []string) error {
 		return err
 	}
 
-	in, closeIn, err := openInput(cfg.inputPath)
-	if err != nil {
-		return err
-	}
-	defer closeIn()
-
 	sender, err := udp.Dial(cfg.dst, udp.WithRateBytesPerSec(cfg.rateBPS))
 	if err != nil {
 		return err
@@ -84,13 +85,78 @@ func runTx(ctx context.Context, args []string) error {
 	defer sender.Close()
 
 	tx := &txLoop{
-		cfg:    cfg,
-		send:   sender.Send,
-		out:    make([]byte, 0, framing.MaxFrameLen),
-		buf:    make([]byte, cfg.chunkBytes),
-		reader: bufio.NewReaderSize(in, 64<<10),
+		cfg:  cfg,
+		send: sender.Send,
+		out:  make([]byte, 0, framing.MaxFrameLen),
+		buf:  make([]byte, cfg.chunkBytes),
 	}
+
+	// --send-file wraps a file in a DDF envelope and ships it as one
+	// message. We synthesize an io.Reader over the envelope so the
+	// existing txLoop.run path stays unchanged.
+	if cfg.sendFile != "" {
+		env, err := buildFileEnvelope(cfg.sendFile, cfg.maxMessage)
+		if err != nil {
+			return err
+		}
+		tx.reader = bufio.NewReader(bytesReaderOf(env))
+		return tx.run(ctx)
+	}
+
+	in, closeIn, err := openInput(cfg.inputPath)
+	if err != nil {
+		return err
+	}
+	defer closeIn()
+	tx.reader = bufio.NewReaderSize(in, 64<<10)
 	return tx.run(ctx)
+}
+
+// buildFileEnvelope reads path into memory (bounded by maxMessage), wraps
+// it in a fileenv envelope using the file's basename and current mode,
+// and returns the envelope bytes ready to feed to txLoop.
+func buildFileEnvelope(path string, maxMessage int64) ([]byte, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if st.IsDir() {
+		return nil, fmt.Errorf("%s is a directory; this sprint only supports single-file transfer", path)
+	}
+	if st.Size() > maxMessage {
+		return nil, fmt.Errorf("file %s is %d bytes; exceeds --max-message %d", path, st.Size(), maxMessage)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	name := filepath.Base(path)
+	mode := uint32(st.Mode().Perm()) // permission bits only; type bits stripped
+	env, err := fileenv.Encode(nil, name, mode, content)
+	if err != nil {
+		return nil, fmt.Errorf("encode envelope: %w", err)
+	}
+	return env, nil
+}
+
+// bytesReaderOf is a tiny adapter; we avoid a top-level "bytes" import
+// in tx.go by going through io.Reader directly.
+func bytesReaderOf(b []byte) io.Reader {
+	return &byteSliceReader{b: b}
+}
+
+type byteSliceReader struct {
+	b   []byte
+	off int
+}
+
+func (r *byteSliceReader) Read(p []byte) (int, error) {
+	if r.off >= len(r.b) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.b[r.off:])
+	r.off += n
+	return n, nil
 }
 
 // openInput returns an io.Reader and a close function for the given path.

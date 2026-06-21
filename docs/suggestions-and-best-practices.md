@@ -46,6 +46,14 @@ A living log of recommendations made during DataDiode development. Newest date a
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
 
+### File transfer (from S02-1)
+- **Application-layer envelope, not transport-layer change.** File semantics (name, mode, hash) live in a `DDF` envelope *inside* the existing diode payload. The transport stays oblivious. This is also the model for future protocols (syslog, OPC, MQTT) — each gets its own envelope.
+- **Reject path traversal at the parser, not at the writer.** `fileenv.Decode` rejects names containing `/`, `\`, NUL, `.`, `..` *before* returning to the caller. The writer also re-baselines with `filepath.Base` (defense in depth) — a Decode bug would otherwise let the writer escape `--files-to`.
+- **Atomic write via same-dir temp + rename.** The file at its final path either doesn't exist or is complete. Mode is applied with `chmod` on the tmp file *before* rename, so the final inode never appears with a wrong mode briefly.
+- **Mutually-exclusive sink flags.** `--out` (raw stream) and `--files-to` (named files) cannot both be set — the receiver picks one mode at startup. Same on tx: `--in` and `--send-file` are mutually exclusive.
+- **Bump default `SO_RCVBUF` to 4 MiB.** Discovered while sending a 4 MB binary: kernel default rcvbuf (~256 KiB) overflowed at full loopback speed → 8% UDP loss → message never completed. 4 MiB holds ~3000 max-MTU datagrams, enough for any realistic receiver decode rate. Best-effort: kernel `net.core.rmem_max` may cap it; we don't error.
+- **Reuse `startRx` helper across E2E tests** by allowing an empty `outPath` to suppress `--out` — keeps the helper general without copy-pasting subprocess plumbing per test.
+
 ### Threat-modeling discipline (from S01-12)
 - **Write the threat model after the code, but before the next sprint** — too early and you're guessing what'll get built; too late and you've shipped the threats. End of sprint is the right beat.
 - **STRIDE alone is not enough** for a diode. Add a "diode-specific" section for covert channels, replay, IP fragmentation, parser ambiguity — the threats that don't cleanly fit S/T/R/I/D/E but matter for *this* product.

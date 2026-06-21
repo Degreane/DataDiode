@@ -351,19 +351,72 @@ tail -F /var/log/messages | diode --mode=tx --dst=10.99.0.20:9999 --chunk=1200
 
 Each line on the left appears on the right, append-only.
 
-### 8b. One-shot file transfer
+### 8b. Send a file (preserving its name and mode)
+
+This is the recommended way to ship files. It wraps each file in a small
+"DDF" envelope (name, mode bits, size, SHA-256) so the receiver can write
+it under its real basename with the original permissions and verify
+integrity end-to-end.
+
+**Receiver** — point at a directory; every file delivered lands there:
 
 ```bash
-# receiver
+mkdir -p /srv/incoming
+diode --mode=rx --listen=:9999 --files-to=/srv/incoming
+```
+
+**Sender** — one invocation per file:
+
+```bash
+diode --mode=tx --dst=10.99.0.20:9999 --send-file=/path/to/report.pdf
+diode --mode=tx --dst=10.99.0.20:9999 --send-file=/path/to/another.tar
+```
+
+The receiver logs each delivery:
+
+```
+diode rx: wrote /srv/incoming/report.pdf (1234567 bytes, mode 644)
+diode rx: wrote /srv/incoming/another.tar (98765432 bytes, mode 600)
+```
+
+**Security properties:**
+- Receiver rejects filenames containing `/`, `\`, NUL, `.`, or `..` — no path traversal can write outside `--files-to`. Tested in `internal/fileenv` (`TestDecode_RejectsPathTraversalInName`).
+- Receiver writes via tmp file + atomic rename, so a partial file is never observable at the final path.
+- SHA-256 of the content is verified before the rename; a corrupted-in-transit file is dropped, not delivered partial.
+
+**For lossy networks**, layer `--redundancy=N`:
+
+```bash
+diode --mode=tx --dst=10.99.0.20:9999 --send-file=big.tar --redundancy=3
+```
+
+Each frame ships 3 times; receiver dedupes. Up to N-1 of every N datagrams can be lost without losing the file.
+
+**For files bigger than 64 MiB** (the `--max-message` default), raise the cap:
+
+```bash
+diode --mode=tx --dst=10.99.0.20:9999 --send-file=huge.iso --max-message=$((4*1024*1024*1024))
+```
+
+(For multi-GiB transfers, expect to also raise the receiver's `--max-bytes` to match.)
+
+### 8c. Raw byte stream (without filename)
+
+When you just want bytes through (the diode doesn't care what they are):
+
+```bash
+# receiver — appends every delivered message to this file
 diode --mode=rx --listen=:9999 --out=/srv/incoming/payload.bin
 ```
 
 ```bash
-# sender
-diode --mode=tx --dst=10.99.0.20:9999 --chunk=1400 --redundancy=3 < big-file.tar
+# sender — read from stdin
+cat big-file.tar | diode --mode=tx --dst=10.99.0.20:9999 --chunk=1400 --redundancy=3
 ```
 
-`--redundancy=3` triples bandwidth but means up to 2 of every 3 UDP datagrams can be dropped without losing the message.
+This is the right mode for syslog streams, pipelines, or anything where
+the consumer doesn't need a filename. `--out` and `--files-to` are
+mutually exclusive on the receiver; pick one per receiver process.
 
 ### 8c. Rate-limited continuous shipping
 

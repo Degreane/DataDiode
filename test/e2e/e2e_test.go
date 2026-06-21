@@ -70,13 +70,16 @@ type rxProc struct {
 // startRx launches `diode --mode=rx` on the given port, writing to
 // outPath. It blocks until the child prints its "listening on" banner
 // so the caller is guaranteed the socket is bound before sending.
+//
+// If outPath is empty, no --out flag is passed; this is how callers
+// using --files-to (passed via extraArgs) opt out of the raw-stream sink.
 func startRx(t *testing.T, port int, outPath string, extraArgs ...string) *rxProc {
 	t.Helper()
-	args := append([]string{
-		"--mode=rx",
-		fmt.Sprintf("--listen=127.0.0.1:%d", port),
-		"--out=" + outPath,
-	}, extraArgs...)
+	args := []string{"--mode=rx", fmt.Sprintf("--listen=127.0.0.1:%d", port)}
+	if outPath != "" {
+		args = append(args, "--out="+outPath)
+	}
+	args = append(args, extraArgs...)
 	cmd := exec.Command(diodeBin, args...)
 	cmd.Stdout = os.Stderr // chatter to stderr in tests; doesn't affect assertions
 
