@@ -25,24 +25,18 @@
 
 ## On-wire frame (v0)
 
+Locked in [ADR-0002](../architecture/ADR-0002-frame-format.md). Summary:
+
 ```
-┌────────────┬────────────┬────────────┬───────────────┬──────────────┐
-│ magic (4B) │ ver  (1B)  │ flags (1B) │ seq      (8B) │ payload_len  │
-│ 0x44 44 4F │ 0x01       │ 0x00       │ uint64 BE     │ uint32 BE    │
-├────────────┴────────────┴────────────┴───────────────┴──────────────┤
-│                       payload (≤ 1400 B, CBOR)                       │
-├──────────────────────────────────────────────────────────────────────┤
-│                            sha256 (32 B)                             │
-└──────────────────────────────────────────────────────────────────────┘
+magic(4) | ver(1) | flags(1) | seq(8) | msg_id(4) | chunk_index(2) |
+chunk_total(2) | payload_len(4) | payload(≤1400) | sha256(32)
 ```
 
-- `magic` = `"DDO\0"` — sanity check on receive.
-- `seq` — monotonic per sender boot; receiver tolerates gaps (UDP loss).
-- `payload_len` ≤ 1400 to stay under typical MTU (no IP fragmentation).
-- `sha256` covers `magic..payload`.
-- Large messages: chunked by sender, reassembled by receiver using `seq` + a `final` flag bit.
-
-ADR-0002 (framing) will formalize this.
+- Header is fixed 26 B; total frame ≤ 1458 B (under Ethernet MTU).
+- All multi-byte ints big-endian.
+- Chunking is explicit (`msg_id` + `chunk_index`/`chunk_total`); FINAL flag marks last chunk.
+- SHA-256 covers header + payload (everything before the hash).
+- Receiver silently drops anything that fails validation rules (no return channel for error reporting).
 
 ## Backlog
 

@@ -45,3 +45,12 @@ A living log of recommendations made during DataDiode development. Newest date a
 ### Documentation discipline
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
+
+### Frame format (locked by ADR-0002)
+- **Magic + version up front** — the receiver can drop garbage in one branch, and a future v1 is explicitly *not* backward-compatible (silently dropped by v0 receivers, which is the right default for a security format).
+- **All multi-byte ints big-endian.** Cheap insurance against a future ARM/RISC-V port discovering an endianness bug in production.
+- **SHA-256 covers header + payload**, hash is appended (not interleaved), so a receiver can compute it in one pass after reading `payload_len`.
+- **Explicit chunking** (`msg_id`, `chunk_index`, `chunk_total`) — never rely on IP fragmentation; a single lost IP fragment loses the whole datagram with no recourse.
+- **Receiver drops bad frames silently**, increments counters. No return path means no place to send errors; logs at line rate would DoS the operator.
+- **Reserved flag bits must be zero** — receivers reject any frame with them set, so the v0 spec can grow without ambiguity.
+- **Cap payload at 1400 B** — leaves headroom under 1500-byte MTU for tunneling layers that might be added later (VLAN, GRE, WireGuard underlay).
