@@ -28,10 +28,11 @@ import (
 )
 
 // DefaultReadBufferLen is the size of the userspace buffer allocated
-// per Recv call or per Run loop iteration. It must be at least
-// framing.MaxFrameLen; anything smaller would silently truncate
+// per Recv call or per Run loop iteration. Must be at least
+// framing.MaxFrameLen + framing.HMACLen (signed frames are 32 bytes
+// larger than unsigned). Anything smaller would silently truncate
 // datagrams.
-const DefaultReadBufferLen = framing.MaxFrameLen
+const DefaultReadBufferLen = framing.MaxFrameLen + framing.HMACLen
 
 // DefaultSocketRcvBufBytes is the default SO_RCVBUF size we ask the
 // kernel to set on the receiver socket. At full-MTU frames this holds
@@ -174,9 +175,10 @@ func Listen(addr string, opts ...ReceiverOption) (*Receiver, error) {
 	for _, o := range opts {
 		o(&r.opts)
 	}
-	if r.opts.bufferLen < framing.MaxFrameLen {
+	minBuf := framing.MaxFrameLen + framing.HMACLen
+	if r.opts.bufferLen < minBuf {
 		_ = conn.Close()
-		return nil, fmt.Errorf("udp: buffer length %d < framing.MaxFrameLen %d", r.opts.bufferLen, framing.MaxFrameLen)
+		return nil, fmt.Errorf("udp: buffer length %d < required %d (MaxFrameLen + HMACLen)", r.opts.bufferLen, minBuf)
 	}
 	if r.opts.socketRcvBuf > 0 {
 		// Best-effort: ignore error so a sandbox without CAP_NET_ADMIN

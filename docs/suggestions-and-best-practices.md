@@ -46,6 +46,17 @@ A living log of recommendations made during DataDiode development. Newest date a
 - All suggestions and best-practice recommendations go in **this file**, not just in chat.
 - ADRs capture *decisions* (with alternatives and consequences); this file captures *advice* (which may or may not become a decision later).
 
+### HMAC signing design (from S02-6, ADR-0004)
+- **Opt-in via `--key-file=<path>` on both sides.** No `--key=<hex>` flag — process arguments leak into `ps`. The file should be `chmod 600`; we warn (don't refuse) on permissive modes, following SSH/PGP convention.
+- **Auto-detect hex vs raw** in the key file. If every byte after whitespace-strip is a hex char AND the length is even, decode as hex; otherwise treat as raw. Lets operators paste a hex string OR write a binary file.
+- **HMAC is appended after the SHA-256, not in place of it.** Wire layout: `header + payload + sha256 + hmac` when SIGNED. Pro: same code path can detect corruption (sha256 fails) before doing the keyed verify; layout-wise the unsigned and signed paths share offset arithmetic up to the hash.
+- **The SIGNED flag bit lives in a previously-reserved bit (0x10).** A v0 receiver without a key correctly rejects a SIGNED frame via the existing reserved-bit-set check — no version bump needed for two-way safety.
+- **Receiver policy is bidirectional refusal.** A keyed receiver MUST reject unsigned frames (otherwise an attacker bypasses auth by not signing). A keyless receiver MUST reject signed frames (otherwise an attacker downgrades by signing with their own key). Both are enforced inside `framing.Decode` via `ErrUnexpectedSign` / `ErrSignedExpected`.
+- **`crypto/hmac` provides `hmac.Equal` for constant-time compare.** Use it — never `bytes.Equal` on MAC outputs.
+- **Encode controls FlagSigned.** Callers must not pre-set the flag; Encode sets it iff a non-nil key was passed. Pre-setting is rejected as misuse — prevents callers from accidentally setting SIGNED without actually signing.
+- **Bump the UDP read buffer minimum** by `HMACLen` (32 bytes). A signed full-MTU frame is 1490 bytes, not 1458. Forgetting this would silently truncate every signed frame.
+- **HMAC scope = same as SHA-256** (header + payload). Including the SHA-256 in the MAC scope would be redundant — the MAC already cryptographically covers everything the SHA does.
+
 ### Makefile design (from S02-5)
 - **Self-documenting via `## target: desc` comments + awk in `make help`.** Single source of truth — the comment IS the help text. No drift between docs and reality.
 - **`.DEFAULT_GOAL := help`** — bare `make` prints the menu, not an error or a build.

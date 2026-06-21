@@ -84,7 +84,7 @@ func TestTxLoop_EmptyInputEmitsHeartbeat(t *testing.T) {
 	if len(*sent) != 1 {
 		t.Fatalf("expected 1 heartbeat frame, got %d", len(*sent))
 	}
-	h, payload, err := framing.Decode((*sent)[0])
+	h, payload, err := framing.Decode((*sent)[0], nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestTxLoop_SingleChunkMessage(t *testing.T) {
 	if len(*sent) != 1 {
 		t.Fatalf("expected 1 frame, got %d", len(*sent))
 	}
-	h, got, err := framing.Decode((*sent)[0])
+	h, got, err := framing.Decode((*sent)[0], nil)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestTxLoop_MultiChunkMessage(t *testing.T) {
 
 	var reassembled []byte
 	for i, raw := range *sent {
-		h, p, err := framing.Decode(raw)
+		h, p, err := framing.Decode(raw, nil)
 		if err != nil {
 			t.Fatalf("decode frame %d: %v", i, err)
 		}
@@ -164,7 +164,7 @@ func TestTxLoop_Redundancy(t *testing.T) {
 	if len(*sent) != 3 {
 		t.Fatalf("frame count: got %d, want 3", len(*sent))
 	}
-	original, _, err := framing.Decode((*sent)[0])
+	original, _, err := framing.Decode((*sent)[0], nil)
 	if err != nil {
 		t.Fatalf("decode original: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestTxLoop_Redundancy(t *testing.T) {
 		t.Fatalf("first frame must NOT carry REDUNDANT")
 	}
 	for i := 1; i < 3; i++ {
-		h, _, err := framing.Decode((*sent)[i])
+		h, _, err := framing.Decode((*sent)[i], nil)
 		if err != nil {
 			t.Fatalf("decode copy %d: %v", i, err)
 		}

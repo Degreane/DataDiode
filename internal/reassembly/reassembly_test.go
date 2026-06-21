@@ -11,7 +11,7 @@ import (
 // encode is a tiny test helper that wraps framing.Encode with sane defaults.
 func encode(t *testing.T, h framing.Header, payload []byte) []byte {
 	t.Helper()
-	buf, err := framing.Encode(nil, h, payload)
+	buf, err := framing.Encode(nil, h, payload, nil)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}

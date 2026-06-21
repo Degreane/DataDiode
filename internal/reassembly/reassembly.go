@@ -55,6 +55,11 @@ type Options struct {
 	// cache (every redundant copy of a completed single-chunk
 	// message will re-deliver).
 	RecentDeliveredSize int
+	// Key is the pre-shared HMAC key (ADR-0004). When non-nil the
+	// reassembler ONLY accepts SIGNED frames with a valid HMAC; any
+	// unsigned or wrong-key frame is counted as FramesIgnored.
+	// Must be the same key configured on the sender.
+	Key []byte
 }
 
 // DefaultOptions returns sensible Sprint-01 defaults.
@@ -119,7 +124,7 @@ func New(deliver DeliverFunc, opts Options) (*Reassembler, error) {
 func (r *Reassembler) Ingest(rawFrame []byte) error {
 	r.stats.FramesIn++
 
-	h, payload, err := framing.Decode(rawFrame)
+	h, payload, err := framing.Decode(rawFrame, r.opts.Key)
 	if err != nil {
 		// Per ADR-0002 §"Validation rules": drop silently. Counter
 		// only; logging at line rate would DoS the operator.

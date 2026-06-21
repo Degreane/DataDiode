@@ -400,7 +400,50 @@ diode --mode=tx --dst=10.99.0.20:9999 --send-file=huge.iso --max-message=$((4*10
 
 (For multi-GiB transfers, expect to also raise the receiver's `--max-bytes` to match.)
 
-### 8c. Raw byte stream (without filename)
+### 8c. Authenticate every frame with a pre-shared key
+
+If anyone other than the sender can reach the receiver's UDP port, they
+can forge valid-looking frames (SHA-256 is integrity, not authentication).
+Enabling HMAC-SHA256 with a pre-shared key closes that gap. The flag is
+**`--key-file=<path>`** on both sides.
+
+**Generate a key** (32 random bytes, hex-encoded):
+
+```bash
+head -c 32 /dev/urandom | xxd -p -c 64 > psk.hex
+chmod 600 psk.hex
+```
+
+Distribute that file to both hosts via a trusted channel (the diode has no
+return path, so there's no in-band key exchange — that's the operator's
+problem to solve, e.g., with SSH or sneakernet).
+
+**Receiver** (rejects everything that isn't signed with this key):
+
+```bash
+diode --mode=rx --listen=:9999 --files-to=/srv/incoming --key-file=/etc/diode/psk.hex
+```
+
+**Sender** (signs every frame):
+
+```bash
+diode --mode=tx --dst=10.99.0.20:9999 --send-file=report.pdf --key-file=/etc/diode/psk.hex
+```
+
+**What's protected:**
+- An attacker on the wire **cannot inject frames** the receiver will accept.
+- An attacker **cannot tamper** with in-flight frames (HMAC fails).
+- An attacker **cannot downgrade** to unsigned (a keyed receiver rejects unsigned frames; a keyless receiver rejects signed ones — see ADR-0004).
+
+**What's NOT protected:**
+- **Confidentiality.** The payload is still plaintext on the wire. Pre-encrypt at the application layer until ADR-0005 ships AES-256-GCM.
+- **Replay.** A frame captured today and replayed later within the recently-delivered cache window is caught; outside that window it may re-deliver. Closes with ADR-0007.
+
+**Key file format:** the file may contain either a hex-encoded key (`>=64` hex chars, whitespace ignored) or raw binary bytes (`>=32` bytes). Auto-detected.
+
+**Backward compatibility:** if `--key-file` is omitted on either side, behavior is identical to today. Existing deployments don't need to change.
+
+### 8d. Raw byte stream (without filename)
 
 When you just want bytes through (the diode doesn't care what they are):
 

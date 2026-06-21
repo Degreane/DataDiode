@@ -12,7 +12,7 @@ import (
 // helper: build a known-good frame for a given payload size.
 func mustEncode(t *testing.T, h Header, payload []byte) []byte {
 	t.Helper()
-	buf, err := Encode(nil, h, payload)
+	buf, err := Encode(nil, h, payload, nil)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestRoundTrip_Empty(t *testing.T) {
 		t.Fatalf("empty frame length: got %d, want %d", len(buf), MinFrameLen)
 	}
 
-	got, payload, err := Decode(buf)
+	got, payload, err := Decode(buf, nil)
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestRoundTrip_MaxPayload(t *testing.T) {
 		t.Fatalf("max frame length: got %d, want %d", len(buf), MaxFrameLen)
 	}
 
-	gotHdr, gotPayload, err := Decode(buf)
+	gotHdr, gotPayload, err := Decode(buf, nil)
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestRoundTrip_TableDriven(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			buf := mustEncode(t, tc.h, tc.payload)
-			h, p, err := Decode(buf)
+			h, p, err := Decode(buf, nil)
 			if err != nil {
 				t.Fatalf("Decode: %v", err)
 			}
@@ -106,28 +106,28 @@ func TestHeaderAccessors(t *testing.T) {
 // ---- Encode error cases ---------------------------------------------------
 
 func TestEncode_PayloadTooLarge(t *testing.T) {
-	_, err := Encode(nil, Header{ChunkTotal: 1}, make([]byte, MaxPayloadLen+1))
+	_, err := Encode(nil, Header{ChunkTotal: 1}, make([]byte, MaxPayloadLen+1), nil)
 	if !errors.Is(err, ErrPayloadLen) {
 		t.Fatalf("err: got %v, want %v", err, ErrPayloadLen)
 	}
 }
 
 func TestEncode_ReservedFlags(t *testing.T) {
-	_, err := Encode(nil, Header{ChunkTotal: 1, Flags: 0x01}, nil)
+	_, err := Encode(nil, Header{ChunkTotal: 1, Flags: 0x01}, nil, nil)
 	if !errors.Is(err, ErrReservedFlags) {
 		t.Fatalf("err: got %v, want %v", err, ErrReservedFlags)
 	}
 }
 
 func TestEncode_ChunkTotalZero(t *testing.T) {
-	_, err := Encode(nil, Header{ChunkTotal: 0}, nil)
+	_, err := Encode(nil, Header{ChunkTotal: 0}, nil, nil)
 	if !errors.Is(err, ErrChunkTotal) {
 		t.Fatalf("err: got %v, want %v", err, ErrChunkTotal)
 	}
 }
 
 func TestEncode_ChunkIndexOutOfRange(t *testing.T) {
-	_, err := Encode(nil, Header{ChunkIndex: 5, ChunkTotal: 5}, nil)
+	_, err := Encode(nil, Header{ChunkIndex: 5, ChunkTotal: 5}, nil, nil)
 	if !errors.Is(err, ErrChunkIndex) {
 		t.Fatalf("err: got %v, want %v", err, ErrChunkIndex)
 	}
@@ -136,14 +136,14 @@ func TestEncode_ChunkIndexOutOfRange(t *testing.T) {
 // ---- Decode error cases ---------------------------------------------------
 
 func TestDecode_TooShort(t *testing.T) {
-	_, _, err := Decode(make([]byte, MinFrameLen-1))
+	_, _, err := Decode(make([]byte, MinFrameLen-1), nil)
 	if !errors.Is(err, ErrShort) {
 		t.Fatalf("err: got %v, want %v", err, ErrShort)
 	}
 }
 
 func TestDecode_TooLong(t *testing.T) {
-	_, _, err := Decode(make([]byte, MaxFrameLen+1))
+	_, _, err := Decode(make([]byte, MaxFrameLen+HMACLen+1), nil)
 	if !errors.Is(err, ErrTooLong) {
 		t.Fatalf("err: got %v, want %v", err, ErrTooLong)
 	}
@@ -152,7 +152,7 @@ func TestDecode_TooLong(t *testing.T) {
 func TestDecode_BadMagic(t *testing.T) {
 	buf := mustEncode(t, Header{ChunkTotal: 1}, nil)
 	buf[0] ^= 0xFF
-	_, _, err := Decode(buf)
+	_, _, err := Decode(buf, nil)
 	if !errors.Is(err, ErrMagic) {
 		t.Fatalf("err: got %v, want %v", err, ErrMagic)
 	}
@@ -161,7 +161,7 @@ func TestDecode_BadMagic(t *testing.T) {
 func TestDecode_BadVersion(t *testing.T) {
 	buf := mustEncode(t, Header{ChunkTotal: 1}, nil)
 	buf[4] = 0xFF
-	_, _, err := Decode(buf)
+	_, _, err := Decode(buf, nil)
 	if !errors.Is(err, ErrVersion) {
 		t.Fatalf("err: got %v, want %v", err, ErrVersion)
 	}
@@ -170,7 +170,7 @@ func TestDecode_BadVersion(t *testing.T) {
 func TestDecode_ReservedFlagsBits(t *testing.T) {
 	buf := mustEncode(t, Header{ChunkTotal: 1}, nil)
 	buf[5] |= 0x01 // set a reserved bit
-	_, _, err := Decode(buf)
+	_, _, err := Decode(buf, nil)
 	if !errors.Is(err, ErrReservedFlags) {
 		t.Fatalf("err: got %v, want %v", err, ErrReservedFlags)
 	}
@@ -180,7 +180,7 @@ func TestDecode_PayloadLenTooBig(t *testing.T) {
 	buf := mustEncode(t, Header{ChunkTotal: 1}, []byte("x"))
 	// Overwrite payload_len to MaxPayloadLen+1 (still inside MaxFrameLen check).
 	binary.BigEndian.PutUint32(buf[22:26], MaxPayloadLen+1)
-	_, _, err := Decode(buf)
+	_, _, err := Decode(buf, nil)
 	if !errors.Is(err, ErrPayloadLen) {
 		t.Fatalf("err: got %v, want %v", err, ErrPayloadLen)
 	}
@@ -190,7 +190,7 @@ func TestDecode_LenMismatch(t *testing.T) {
 	buf := mustEncode(t, Header{ChunkTotal: 1}, []byte("hello"))
 	// Lie about payload_len.
 	binary.BigEndian.PutUint32(buf[22:26], 4)
-	_, _, err := Decode(buf)
+	_, _, err := Decode(buf, nil)
 	if !errors.Is(err, ErrLenMismatch) {
 		t.Fatalf("err: got %v, want %v", err, ErrLenMismatch)
 	}
@@ -201,7 +201,7 @@ func TestDecode_ChunkTotalZero(t *testing.T) {
 	binary.BigEndian.PutUint16(buf[20:22], 0)
 	// Recompute hash so we hit the chunk_total check, not the hash check.
 	rehash(buf)
-	_, _, err := Decode(buf)
+	_, _, err := Decode(buf, nil)
 	if !errors.Is(err, ErrChunkTotal) {
 		t.Fatalf("err: got %v, want %v", err, ErrChunkTotal)
 	}
@@ -211,7 +211,7 @@ func TestDecode_ChunkIndexOutOfRange(t *testing.T) {
 	buf := mustEncode(t, Header{ChunkIndex: 0, ChunkTotal: 1}, nil)
 	binary.BigEndian.PutUint16(buf[18:20], 5) // index >= total
 	rehash(buf)
-	_, _, err := Decode(buf)
+	_, _, err := Decode(buf, nil)
 	if !errors.Is(err, ErrChunkIndex) {
 		t.Fatalf("err: got %v, want %v", err, ErrChunkIndex)
 	}
@@ -221,7 +221,7 @@ func TestDecode_HashMismatch(t *testing.T) {
 	buf := mustEncode(t, Header{ChunkTotal: 1}, []byte("tamper me"))
 	// Flip a byte in the payload without recomputing the hash.
 	buf[HeaderLen] ^= 0xFF
-	_, _, err := Decode(buf)
+	_, _, err := Decode(buf, nil)
 	if !errors.Is(err, ErrHash) {
 		t.Fatalf("err: got %v, want %v", err, ErrHash)
 	}
@@ -252,7 +252,7 @@ func TestWireGolden(t *testing.T) {
 		ChunkIndex: 0,
 		ChunkTotal: 1,
 	}
-	buf, err := Encode(nil, h, []byte("HI"))
+	buf, err := Encode(nil, h, []byte("HI"), nil)
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
@@ -306,16 +306,16 @@ func BenchmarkEncode(b *testing.B) {
 	b.SetBytes(int64(MaxFrameLen))
 	for b.Loop() {
 		dst = dst[:0]
-		_, _ = Encode(dst, h, payload)
+		_, _ = Encode(dst, h, payload, nil)
 	}
 }
 
 func BenchmarkDecode(b *testing.B) {
 	payload := bytes.Repeat([]byte{0xAB}, MaxPayloadLen)
 	h := Header{ChunkTotal: 1, Flags: FlagFinal, Seq: 1, MsgID: 1}
-	buf, _ := Encode(nil, h, payload)
+	buf, _ := Encode(nil, h, payload, nil)
 	b.SetBytes(int64(len(buf)))
 	for b.Loop() {
-		_, _, _ = Decode(buf)
+		_, _, _ = Decode(buf, nil)
 	}
 }

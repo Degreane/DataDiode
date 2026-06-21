@@ -23,6 +23,7 @@ type txConfig struct {
 	redundancy  int
 	inputPath   string // "-" for stdin
 	sendFile    string // path to a file to wrap in a fileenv envelope; mutually exclusive with inputPath
+	keyFile     string // path to PSK file; when set every frame is signed (ADR-0004)
 	maxMessage  int64  // hard cap to keep us well under MsgID/ChunkTotal ceilings
 	heartbeatHz int
 }
@@ -48,6 +49,7 @@ flags:`)
 	fs.IntVar(&c.redundancy, "redundancy", 1, "send each frame N times (>=1)")
 	fs.StringVar(&c.inputPath, "in", "-", "input file path (\"-\" = stdin); raw bytes, no envelope")
 	fs.StringVar(&c.sendFile, "send-file", "", "path to a file to send as a named file (wraps in DDF envelope); mutually exclusive with --in")
+	fs.StringVar(&c.keyFile, "key-file", "", "path to a pre-shared key file (>=32 bytes raw or >=64 hex chars); when set every frame is HMAC-signed (ADR-0004)")
 	fs.Int64Var(&c.maxMessage, "max-message", 64<<20, "abort if a single message exceeds N bytes (default 64 MiB)")
 	fs.IntVar(&c.heartbeatHz, "heartbeat-hz", 0, "send N heartbeat frames per second when idle (0 = off)")
 
@@ -78,6 +80,15 @@ func runTx(ctx context.Context, args []string) error {
 		return err
 	}
 
+	var key []byte
+	if cfg.keyFile != "" {
+		key, err = loadKeyFile(cfg.keyFile)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "diode tx: signing every frame with %d-byte PSK from %s\n", len(key), cfg.keyFile)
+	}
+
 	sender, err := udp.Dial(cfg.dst, udp.WithRateBytesPerSec(cfg.rateBPS))
 	if err != nil {
 		return err
@@ -87,8 +98,9 @@ func runTx(ctx context.Context, args []string) error {
 	tx := &txLoop{
 		cfg:  cfg,
 		send: sender.Send,
-		out:  make([]byte, 0, framing.MaxFrameLen),
+		out:  make([]byte, 0, framing.MaxFrameLen+framing.HMACLen),
 		buf:  make([]byte, cfg.chunkBytes),
+		key:  key,
 	}
 
 	// --send-file wraps a file in a DDF envelope and ships it as one
@@ -181,6 +193,10 @@ type txLoop struct {
 	buf    []byte // read buffer of size cfg.chunkBytes
 	reader *bufio.Reader
 
+	// key is nil when --key-file was not set (unsigned frames, current
+	// behavior). When non-nil every frame is signed per ADR-0004.
+	key []byte
+
 	seq   uint64
 	msgID uint32
 }
@@ -239,10 +255,11 @@ func (t *txLoop) run(ctx context.Context) error {
 }
 
 // sendFrame encodes the header+payload and writes it to the wire, plus
-// redundancy-1 marked copies for loss tolerance.
+// redundancy-1 marked copies for loss tolerance. When t.key is non-nil
+// every frame is also signed (FlagSigned + appended HMAC) per ADR-0004.
 func (t *txLoop) sendFrame(h framing.Header, payload []byte) error {
 	t.out = t.out[:0]
-	frame, err := framing.Encode(t.out, h, payload)
+	frame, err := framing.Encode(t.out, h, payload, t.key)
 	if err != nil {
 		return fmt.Errorf("encode frame seq=%d msg=%d chunk=%d: %w", h.Seq, h.MsgID, h.ChunkIndex, err)
 	}
@@ -258,7 +275,7 @@ func (t *txLoop) sendFrame(h framing.Header, payload []byte) error {
 	hDup.Flags |= framing.FlagRedundant
 	for range t.cfg.redundancy - 1 {
 		t.out = t.out[:0]
-		frame, err := framing.Encode(t.out, hDup, payload)
+		frame, err := framing.Encode(t.out, hDup, payload, t.key)
 		if err != nil {
 			return err
 		}

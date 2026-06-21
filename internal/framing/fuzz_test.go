@@ -27,7 +27,7 @@ func FuzzDecode(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		h, payload, err := Decode(data)
+		h, payload, err := Decode(data, nil)
 		if err != nil {
 			return // expected for most random inputs
 		}
@@ -36,7 +36,7 @@ func FuzzDecode(f *testing.F) {
 		reH := h
 		reH.Version = 0
 		reH.PayloadLen = 0
-		got, err := Encode(nil, reH, payload)
+		got, err := Encode(nil, reH, payload, nil)
 		if err != nil {
 			t.Fatalf("re-encode of valid-decoded frame failed: %v\nheader=%+v payload=%x", err, h, payload)
 		}
@@ -47,7 +47,7 @@ func FuzzDecode(f *testing.F) {
 }
 
 func mustFuzzEncode(h Header, payload []byte) []byte {
-	buf, err := Encode(nil, h, payload)
+	buf, err := Encode(nil, h, payload, nil)
 	if err != nil {
 		panic(err)
 	}

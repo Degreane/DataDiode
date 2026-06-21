@@ -211,7 +211,7 @@ ADR-0002 pins big-endian and fixed offsets. `FuzzDecode` enforces a roundtrip pr
 
 | ID | Risk | Severity | Fix landing |
 |---|---|---|---|
-| **S-1 / T-1** | Unauthenticated frames; on-path attacker can inject anything | **HIGH** | ADR-0004 (HMAC/Ed25519) |
+| ~~**S-1 / T-1**~~ | ~~Unauthenticated frames; on-path attacker can inject anything~~ | **CLOSED** | ADR-0004 shipped via `--key-file`. Operators MUST configure on both sides to benefit. |
 | **I-1** | Plaintext on the wire | **HIGH** for non-physically-isolated wires | ADR-0005 (AES-256-GCM with PSK) |
 | **D-3** | One-lost-packet kills a multi-chunk message | MEDIUM | ADR-0006 (FEC) |
 | **D-4** | Slow consumer causes silent drops in kernel UDP buffer | LOW–MEDIUM | Optional metrics endpoint |

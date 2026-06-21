@@ -20,7 +20,7 @@ Original Sprint-02 plan from the S01 retro put plugins (WASM) first. A user requ
 | S02-3  | Run the live two-LXC demo end-to-end (carry-over from S01) | XS | ✅ — SHA-256 match across 10.99.0.10 → 10.99.0.20, reverse blocked, ICMP blocked |
 | ~~S02-4~~ | ~~Push to GitHub~~ — **dropped:** repo is local-only by user direction; CI workflow stays in `.github/` as future-ready scaffolding | — | ❌ dropped |
 | S02-5  | Makefile: `build`, `test`, `e2e`, `demo`, `lint`, `clean`, `cross`, etc. | S | ✅ |
-| S02-6  | ADR-0004: signing / MAC (HMAC-SHA256 with PSK as starting point) | S | ⚪ |
+| S02-6  | ADR-0004 + impl: HMAC-SHA256 frame signing via `--key-file` (opt-in) | M | ✅ |
 | S02-7  | Plugin host design (WASM via wazero, host ABI) — design only, no code | M | ⚪ |
 | S02-8  | Sprint review + retro | XS | ⚪ |
 

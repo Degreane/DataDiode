@@ -22,6 +22,7 @@ type rxConfig struct {
 	listen         string
 	outPath        string // "-" for stdout
 	filesTo        string // directory; if non-empty, payloads are parsed as DDF envelopes
+	keyFile        string // path to PSK; when set ONLY signed frames are accepted (ADR-0004)
 	maxPending     int
 	maxBytes       int
 	recentSize     int
@@ -48,6 +49,7 @@ flags:`)
 	fs.StringVar(&c.listen, "listen", "", "bind address \"host:port\" or \":port\" (required)")
 	fs.StringVar(&c.outPath, "out", "-", "output file path (\"-\" = stdout); raw payload, appended")
 	fs.StringVar(&c.filesTo, "files-to", "", "directory to write incoming files (parses each message as a DDF envelope); mutually exclusive with --out")
+	fs.StringVar(&c.keyFile, "key-file", "", "path to a pre-shared key file (>=32 bytes raw or >=64 hex chars); when set ONLY signed frames are accepted (ADR-0004)")
 	fs.IntVar(&c.maxPending, "max-pending", 1024, "max incomplete messages held at once")
 	fs.IntVar(&c.maxBytes, "max-bytes", 64<<20, "max aggregate bytes held in incomplete messages")
 	fs.IntVar(&c.recentSize, "recent-msg-cache", 1024, "size of recently-delivered MsgID cache (for REDUNDANT dedup)")
@@ -61,8 +63,9 @@ flags:`)
 		fs.Usage()
 		return c, errors.New("--listen is required")
 	}
-	if c.bufferLen < framing.MaxFrameLen {
-		return c, fmt.Errorf("--buffer-len must be >= %d (framing.MaxFrameLen)", framing.MaxFrameLen)
+	minBuf := framing.MaxFrameLen + framing.HMACLen
+	if c.bufferLen < minBuf {
+		return c, fmt.Errorf("--buffer-len must be >= %d (MaxFrameLen + HMACLen)", minBuf)
 	}
 	// --files-to and --out are mutually exclusive: each message goes to
 	// either a named file or the raw stream sink, not both.
@@ -79,6 +82,15 @@ func runRx(ctx context.Context, args []string) error {
 		return err
 	}
 
+	var key []byte
+	if cfg.keyFile != "" {
+		key, err = loadKeyFile(cfg.keyFile)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "diode rx: enforcing PSK auth (%d-byte key from %s); unsigned frames will be dropped\n", len(key), cfg.keyFile)
+	}
+
 	deliver, closeDeliver, sinkLabel, err := newDeliver(cfg)
 	if err != nil {
 		return err
@@ -89,6 +101,7 @@ func runRx(ctx context.Context, args []string) error {
 		MaxPending:          cfg.maxPending,
 		MaxBytes:            cfg.maxBytes,
 		RecentDeliveredSize: cfg.recentSize,
+		Key:                 key,
 	})
 	if err != nil {
 		return err
