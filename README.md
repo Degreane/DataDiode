@@ -2,7 +2,7 @@
 
 A portable, modular, pluggable **software data diode** — a unidirectional network gateway that enforces one-way data flow from a *low-side* (source) network to a *high-side* (destination) network, with no possibility of return traffic at the application layer.
 
-> Local repository (not pushed to a remote).
+> Hosted at https://github.com/degreane/DataDiode.
 
 ---
 
@@ -146,8 +146,18 @@ go build -o /tmp/diode ./cmd/diode && /tmp/diode --help
 
 ## Status
 
-🚧 **Sprint 1 — MVP.** See [`docs/sprints/sprint-01-mvp.md`](docs/sprints/sprint-01-mvp.md).
-Sprint 0 (research + ADRs + project scaffolding) closed at commit `f69047b`.
+Three sprints closed. Wire protocol at v4 (AEAD + FEC). All HIGH
+residual risks from the threat model closed.
+
+- Sprint 0 (research + ADRs + project scaffolding) — closed.
+- Sprint 1 (MVP) — closed. See [`docs/sprints/sprint-01-mvp.md`](docs/sprints/sprint-01-mvp.md).
+- Sprint 2 (file ops + manifest + vacuum) — closed.
+- Sprint 3 (encryption + replay protection + FEC) — closed.
+
+**Thinking about a real customer deployment?** Read
+[`docs/enterprise-roadmap.md`](docs/enterprise-roadmap.md) — covers
+day-1 surprises, a 30-minute pre-deployment checklist, the
+iterate-as-needed safety bundle, and the path to enterprise-grade.
 
 ## License
 
