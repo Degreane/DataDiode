@@ -361,11 +361,12 @@ residual risks from the threat model closed.
 
 | What you need | Where to look |
 |---|---|
+| **Total beginner — install + first transfer + every flag** | [`docs/operator-guide.md`](docs/operator-guide.md) |
 | Plan the deployment + understand surprises | [`docs/enterprise-roadmap.md`](docs/enterprise-roadmap.md) |
 | Verify the host BEFORE installing | `scripts/preflight.sh --role=rx` (or `tx`/`both`) |
 | Pick host + disk + RAM sizes | [`docs/sizing-guide.md`](docs/sizing-guide.md) |
 | On-call playbook for incidents | [`docs/runbooks.md`](docs/runbooks.md) |
-| Operator how-to walk-through | [`docs/tutorial.md`](docs/tutorial.md) |
+| Concept-first walk-through with diagrams | [`docs/tutorial.md`](docs/tutorial.md) |
 
 ## License
 
