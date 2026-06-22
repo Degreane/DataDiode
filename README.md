@@ -116,6 +116,44 @@ datadiode/
     └── e2e/
 ```
 
+## Getting the enhanced branch
+
+Active development lives on the `enhanced` branch (the `main` branch
+on this remote is older history). Pick whichever workflow matches what
+you have locally.
+
+### Fresh clone
+
+```bash
+git clone -b enhanced git@github.com:Degreane/DataDiode.git
+# or, over HTTPS:
+git clone -b enhanced https://github.com/Degreane/DataDiode.git
+cd DataDiode
+```
+
+### Existing clone — switch to it
+
+```bash
+git fetch origin enhanced
+git checkout enhanced          # creates a local tracking branch on first run
+git pull --ff-only              # subsequent updates
+```
+
+### Just peek at what's on enhanced without switching
+
+```bash
+git fetch origin
+git log --oneline origin/main..origin/enhanced       # commits enhanced has that main doesn't
+git diff origin/main...origin/enhanced -- README.md  # or any path
+```
+
+> Heads up: `enhanced` and `main` have diverged. Don't merge `main`
+> into `enhanced` (or vice versa) without reading the commit log first
+> — the wire protocol on `enhanced` is at v4, while `main` predates
+> session-based framing.
+
+---
+
 ## Quick start (Fedora + plain LXC)
 
 ```bash
