@@ -150,6 +150,8 @@ sha256sum -c --ignore-missing SHA256SUMS
 
 ### Rebuild them yourself
 
+Quick path with `make`:
+
 ```bash
 make cross DIST_DIR=release          # outputs the same 7 files into release/
 ( cd release && sha256sum diode-* > SHA256SUMS )
@@ -158,6 +160,124 @@ make cross DIST_DIR=release          # outputs the same 7 files into release/
 The build is reproducible-ish: identical Go toolchain + identical
 commit + identical `-trimpath -ldflags "-s -w …"` flags should give
 you matching SHA-256s (modulo build-date embedded in `--version`).
+
+#### Cross-compile tutorial (from scratch)
+
+If you don't have `make`, or you want to understand what the Makefile
+is doing, the build is just `go build` with two env vars.
+
+**1. Install Go 1.22+ on the host doing the build** (Linux example):
+
+```bash
+# Fedora / RHEL
+sudo dnf install -y golang
+# Debian / Ubuntu
+sudo apt install -y golang-go
+# macOS
+brew install go
+# Verify (need >= 1.22)
+go version
+```
+
+Go ships with cross-compilers for every supported target already —
+you do **not** need a Windows machine to build a Windows binary, or
+an ARM box to build an arm64 binary. One toolchain, all targets.
+
+**2. Clone the repo:**
+
+```bash
+git clone -b enhanced https://github.com/Degreane/DataDiode.git
+cd DataDiode
+```
+
+**3. Build for one target at a time** with `GOOS` + `GOARCH`:
+
+```bash
+mkdir -p release
+
+# Native build (whatever host you're on)
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
+  -o release/diode ./cmd/diode
+
+# Linux amd64
+GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
+  -o release/diode-linux-amd64 ./cmd/diode
+
+# Linux arm64 (Raspberry Pi 4/5, AWS Graviton, etc.)
+GOOS=linux   GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
+  -o release/diode-linux-arm64 ./cmd/diode
+
+# macOS Intel
+GOOS=darwin  GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
+  -o release/diode-darwin-amd64 ./cmd/diode
+
+# macOS Apple Silicon
+GOOS=darwin  GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
+  -o release/diode-darwin-arm64 ./cmd/diode
+
+# Windows amd64
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
+  -o release/diode-windows-amd64.exe ./cmd/diode
+
+# Windows arm64 (Surface Pro X, Windows-on-ARM)
+GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
+  -o release/diode-windows-arm64.exe ./cmd/diode
+
+# FreeBSD amd64
+GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" \
+  -o release/diode-freebsd-amd64 ./cmd/diode
+```
+
+**4. Or loop over the whole matrix in one shell snippet:**
+
+```bash
+for target in linux/amd64 linux/arm64 \
+              darwin/amd64 darwin/arm64 \
+              windows/amd64 windows/arm64 \
+              freebsd/amd64; do
+  os=${target%/*}; arch=${target#*/}
+  ext=""; [ "$os" = "windows" ] && ext=".exe"
+  out="release/diode-${os}-${arch}${ext}"
+  echo "→ $out"
+  GOOS=$os GOARCH=$arch CGO_ENABLED=0 \
+    go build -trimpath -ldflags="-s -w" -o "$out" ./cmd/diode
+done
+sha256sum release/diode-* > release/SHA256SUMS
+```
+
+**5. What each flag is for:**
+
+| Flag | Why |
+|---|---|
+| `CGO_ENABLED=0`       | Pure-Go build — no glibc / no `libSystem` dependency. The Linux binary runs on Alpine, musl, and even inside `FROM scratch` containers. |
+| `GOOS=<os>`           | Target operating system. Values used here: `linux`, `darwin`, `windows`, `freebsd`. |
+| `GOARCH=<arch>`       | Target CPU architecture: `amd64` (x86-64) or `arm64`. |
+| `-trimpath`           | Strips local filesystem paths out of the binary — gets you closer to reproducible builds and removes a tiny info leak. |
+| `-ldflags="-s -w"`    | `-s` strips the symbol table, `-w` strips DWARF debug info. ~30% smaller binaries. |
+| `-ldflags="-X main.version=…"` | (Makefile does this) Embeds `git describe` and commit hash so `diode --version` shows what was built. |
+
+**6. Smoke-test the binary that matches your host:**
+
+```bash
+./release/diode-linux-amd64 --version
+./release/diode-linux-amd64 --mode=tx --help | head
+```
+
+For non-native targets you'll need either the actual hardware, an
+emulator (`qemu-user-static` for Linux on ARM; Wine for Windows
+binaries on Linux), or just `scp` it to the target machine and run
+it there.
+
+**7. (Optional) verify your build matches the checked-in `release/`:**
+
+```bash
+( cd release && sha256sum -c SHA256SUMS )
+```
+
+`-s -w -trimpath` + the same Go toolchain version + the same commit
+should give you bit-identical binaries. If they differ, check
+`go version` first — minor toolchain updates change the embedded
+build ID.
 
 ---
 
