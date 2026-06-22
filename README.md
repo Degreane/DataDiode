@@ -116,6 +116,51 @@ datadiode/
     └── e2e/
 ```
 
+## Prebuilt binaries
+
+Cross-compiled, stripped, static (`CGO_ENABLED=0`) builds for seven
+platforms are checked into [`release/`](release/) on this branch.
+About 3 MB per binary; one self-contained file per target.
+
+| Platform | File | Notes |
+|---|---|---|
+| Linux amd64   | `release/diode-linux-amd64`       | glibc-free static binary |
+| Linux arm64   | `release/diode-linux-arm64`       | Raspberry Pi 4/5, AWS Graviton, etc. |
+| macOS amd64   | `release/diode-darwin-amd64`      | Intel Macs |
+| macOS arm64   | `release/diode-darwin-arm64`      | Apple Silicon |
+| Windows amd64 | `release/diode-windows-amd64.exe` | |
+| Windows arm64 | `release/diode-windows-arm64.exe` | Surface Pro X, Windows-on-ARM |
+| FreeBSD amd64 | `release/diode-freebsd-amd64`     | |
+
+### Download just the binary you need (no clone)
+
+```bash
+# Linux amd64 example — swap the filename for your target.
+curl -fLO https://raw.githubusercontent.com/Degreane/DataDiode/enhanced/release/diode-linux-amd64
+chmod +x diode-linux-amd64
+./diode-linux-amd64 --version
+```
+
+### Verify the checksum
+
+```bash
+curl -fLO https://raw.githubusercontent.com/Degreane/DataDiode/enhanced/release/SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+### Rebuild them yourself
+
+```bash
+make cross DIST_DIR=release          # outputs the same 7 files into release/
+( cd release && sha256sum diode-* > SHA256SUMS )
+```
+
+The build is reproducible-ish: identical Go toolchain + identical
+commit + identical `-trimpath -ldflags "-s -w …"` flags should give
+you matching SHA-256s (modulo build-date embedded in `--version`).
+
+---
+
 ## Getting the enhanced branch
 
 Active development lives on the `enhanced` branch (the `main` branch

@@ -5,6 +5,11 @@
 *.test
 *.out
 
+# Prebuilt cross-compiled binaries are tracked under release/.
+# Counteract the /*.exe rule above for files inside release/.
+!/release/
+!/release/*.exe
+
 # Go
 /vendor/
 *.prof
