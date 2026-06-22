@@ -647,12 +647,20 @@ If those constraints rule out your deployment, wait for Sprint 02+ rather than i
 
 ## 11. Planning a real deployment?
 
-Before you ship this to a customer host, read
-[`docs/enterprise-roadmap.md`](enterprise-roadmap.md). It covers the
-day-1/week-1/month-1 surprises that bite an unprepared operator
-(path-MTU, `net.core.rmem_max`, `br_netfilter`, spool ownership,
-silent UDP block, etc.), a 30-minute pre-deployment checklist, and the
-path toward an enterprise-grade release.
+Before you ship this to a customer host:
+
+1. **Run the preflight checker** on the target host:
+   `scripts/preflight.sh --role=rx --psk-file=/etc/diode/psk.hex`
+   (or `--role=tx --rx-host=<host>` on the sender side). Stopgap
+   until `diode --mode=preflight` ships in Sprint 04.
+2. **Read [`enterprise-roadmap.md`](enterprise-roadmap.md)** for the
+   day-1/week-1/month-1 surprises (path-MTU, `net.core.rmem_max`,
+   `br_netfilter`, spool ownership, silent UDP block, …) and the
+   path toward an enterprise-grade release.
+3. **Size the host** with [`sizing-guide.md`](sizing-guide.md) —
+   spool dir, RAM, CPU, network defaults.
+4. **Keep [`runbooks.md`](runbooks.md) at hand** for on-call. Seven
+   ranked incidents with confirm → mitigate → root-cause → fix → escalate.
 
 ---
 

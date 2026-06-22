@@ -357,10 +357,15 @@ residual risks from the threat model closed.
 - Sprint 2 (file ops + manifest + vacuum) — closed.
 - Sprint 3 (encryption + replay protection + FEC) — closed.
 
-**Thinking about a real customer deployment?** Read
-[`docs/enterprise-roadmap.md`](docs/enterprise-roadmap.md) — covers
-day-1 surprises, a 30-minute pre-deployment checklist, the
-iterate-as-needed safety bundle, and the path to enterprise-grade.
+**Thinking about a real customer deployment?**
+
+| What you need | Where to look |
+|---|---|
+| Plan the deployment + understand surprises | [`docs/enterprise-roadmap.md`](docs/enterprise-roadmap.md) |
+| Verify the host BEFORE installing | `scripts/preflight.sh --role=rx` (or `tx`/`both`) |
+| Pick host + disk + RAM sizes | [`docs/sizing-guide.md`](docs/sizing-guide.md) |
+| On-call playbook for incidents | [`docs/runbooks.md`](docs/runbooks.md) |
+| Operator how-to walk-through | [`docs/tutorial.md`](docs/tutorial.md) |
 
 ## License
 
