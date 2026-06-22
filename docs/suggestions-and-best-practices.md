@@ -4,6 +4,17 @@ A living log of recommendations made during DataDiode development. Newest date a
 
 ---
 
+## 2026-06-22
+
+### Enterprise roadmap consolidation (post-Sprint-03)
+- **Wrote [`docs/enterprise-roadmap.md`](enterprise-roadmap.md)** consolidating the deploy-readiness picture: day-1/week-1/month-1 deployment surprises, a 30-minute pre-deployment checklist, the 5-item "iterate-as-needed safety bundle" (the prefix of Sprint 04), and the path-to-enterprise-grade broken out by domain (observability, packaging, security, reliability, protocol, testing, docs) plus buyer profile (defense / OT / SOC / financial / SaaS).
+- **Iterate-safe bundle = highest-ROI work right now.** Half a day for five items (wrong-version counter, CHANGELOG with WIRE-BREAKING tag, SECURITY+VERSIONING docs, `--mode=preflight`, reproducible `--version`) closes the only real foot-gun in the deploy-then-iterate model: silent wire-version mismatch after an upgrade. Two wire breaks already (v2→v3 AEAD, v3→v4 FEC) make this concrete, not theoretical.
+- **Default deployment surprises that bite first:** path-MTU below 1500 (PPPoE/VPN/WireGuard/some clouds), kernel `net.core.rmem_max` capping `SO_RCVBUF`, customer outbound firewall silently dropping UDP/9999, Docker's `br_netfilter` swallowing bridge traffic on rx hosts that also run containers, default `/var/spool/diode` not owned by the diode user. These five cover the majority of failed first-deployments.
+- **Recommended sprint ordering when no buyer profile is locked in:** Sprint 04 = iterate-safe bundle + plugin host PoC + observability (metrics endpoint, structured logs, `--mode=inspect`). Sprint 05 = packaging (systemd, signed MSI, signed RPM/DEB, SBOM, logrotate, runbooks). Sprint 06 = pick a buyer profile and specialize. This sequence front-loads universal wins and defers buyer-specific work until the customer signal is clear.
+- **Honest framing matters for product-owner consumption.** Roadmap doc opens with "where the product stands today" and closes with a "what's already solid (don't over-engineer these)" list to keep the gap analysis from reading as a damning critique. Gap-from-today, not is-broken.
+
+---
+
 ## 2026-06-21
 
 ### Language & runtime

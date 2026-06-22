@@ -645,7 +645,18 @@ If those constraints rule out your deployment, wait for Sprint 02+ rather than i
 
 ---
 
-## 11. Where to go next in the code
+## 11. Planning a real deployment?
+
+Before you ship this to a customer host, read
+[`docs/enterprise-roadmap.md`](enterprise-roadmap.md). It covers the
+day-1/week-1/month-1 surprises that bite an unprepared operator
+(path-MTU, `net.core.rmem_max`, `br_netfilter`, spool ownership,
+silent UDP block, etc.), a 30-minute pre-deployment checklist, and the
+path toward an enterprise-grade release.
+
+---
+
+## 12. Where to go next in the code
 
 If you want to read the implementation, in this order:
 
